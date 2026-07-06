@@ -1,0 +1,48 @@
+{
+  "goalId": "G002",
+  "status": "blocked",
+  "implemented": {
+    "backendSpikeContract": [
+      "src/main/java/com/picturejournal/share/spike/domain/ShareSpikeStatus.java",
+      "src/main/java/com/picturejournal/share/spike/domain/SharePayload.java",
+      "src/main/java/com/picturejournal/share/spike/application/ShareSpikeDraft.java",
+      "src/main/java/com/picturejournal/share/spike/application/ShareSpikeDraftStore.java",
+      "src/main/java/com/picturejournal/share/spike/application/FileShareSpikeDraftStore.java",
+      "src/main/java/com/picturejournal/share/spike/application/ShareSpikeService.java",
+      "src/main/java/com/picturejournal/share/spike/api/ShareSpikeController.java"
+    ],
+    "tests": [
+      "src/test/java/com/picturejournal/share/spike/application/ShareSpikeServiceTests.java",
+      "src/test/java/com/picturejournal/share/spike/api/ShareSpikeControllerTests.java"
+    ],
+    "contract": [
+      "contracts/openapi/picture-journal.openapi.json",
+      "build/test-artifacts/g001-openapi-docs.json"
+    ]
+  },
+  "verifiedBy": {
+    "commands": [
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract --rerun-tasks",
+      "./gradlew.bat test --rerun-tasks"
+    ],
+    "reports": [
+      "build/test-results/test/TEST-com.picturejournal.share.spike.application.ShareSpikeServiceTests.xml",
+      "build/test-results/test/TEST-com.picturejournal.share.spike.api.ShareSpikeControllerTests.xml"
+    ]
+  },
+  "coveredCriteria": [
+    "authenticated warm start modeled and tested through durable draft creation with actor+folder",
+    "cold start recovery modeled and tested through file-backed draft reload after service re-instantiation",
+    "unauthenticated recovery modeled and tested through pending-auth draft creation followed by auth binding",
+    "folder continuity modeled and tested through persisted folder selection updates",
+    "payload durability modeled and tested through file-backed draft persistence and recovery"
+  ],
+  "remainingBlocker": "Actual iOS/Android native share-sheet runtime proof still requires a human-controlled mobile execution surface: device or simulator setup, OS-level share invocation, extension/receiver lifecycle observation, and real app handoff verification are not available in this backend-only Windows session.",
+  "nextHumanProof": [
+    "Run the share flow from an iOS share sheet into the mobile shell and confirm warm-start payload delivery.",
+    "Run the share flow from a cold-start iOS/Android app launch and confirm draft recovery.",
+    "Verify unauthenticated share then login recovery on a real mobile runtime.",
+    "Verify folder selection continuity after app background/foreground transitions.",
+    "Verify payload durability after the share extension or receiver UI closes."
+  ]
+}

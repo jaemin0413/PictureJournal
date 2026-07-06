@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "requiredUserSuppliedEnv": [
+    "DB_URL",
+    "DB_USERNAME",
+    "DB_PASSWORD",
+    "STORAGE_PROVIDER",
+    "STORAGE_BUCKET",
+    "STORAGE_ENDPOINT",
+    "STORAGE_ACCESS_KEY",
+    "STORAGE_SECRET_KEY"
+  ],
+  "localDefaultsRemainDevOnly": [
+    "picturejournal-dev-password",
+    "dev-access-key",
+    "dev-secret-key"
+  ],
+  "deploymentGates": [
+    "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+    "git diff --exit-code contracts/openapi/picture-journal.openapi.json",
+    "GET /api/v1/ops/readiness returns unresolvedShareIntakeCount and missingHomeServerEnvKeys",
+    "GET /api/v1/places/search and /api/v1/geocode/reverse enforce cache-before-throttle behavior"
+  ],
+  "tomorrowUserAction": "Supply real home-server database and S3-compatible MinIO values for the requiredUserSuppliedEnv keys; do not reuse dev-only placeholder secrets."
+}

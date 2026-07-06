@@ -1,0 +1,194 @@
+{
+  "architectReview": {
+    "architectureStatus": "CLEAR",
+    "productStatus": "CLEAR",
+    "codeStatus": "CLEAR",
+    "recommendation": "APPROVE",
+    "evidence": "G005 is implemented as a backend-owned saved-place and share-intake core: authenticated share intake creation, deterministic candidate extraction, one-candidate confirmation, multi-candidate selection, zero-candidate draft/manual-fix flow, synchronized ResolveShareIntake orchestration, saved place CRUD, REELS_PLACE folder isolation, and FolderCapabilityPolicy-protected writes.",
+    "commands": [
+      "read .gjc/_session-019f32ab-f4df-7000-97a4-bc9e252f5334/ultragoal/goals.json:raw",
+      "read .gjc/_session-019f3160-45c4-7000-b101-3c4de80dc410/specs/deep-interview-picture-journal-mvp.md:302-363",
+      "./gradlew.bat test --tests com.picturejournal.place.api.PlaceControllerTests --rerun-tasks",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "blockers": []
+  },
+  "executorQa": {
+    "status": "passed",
+    "e2eStatus": "passed",
+    "redTeamStatus": "passed",
+    "evidence": "The focused saved-place/share-intake API suite and the full Spring Boot verification suite pass. Tests cover candidate extraction status transitions, single-candidate confirmation, multi-candidate forced selection, zero-candidate draft plus manual fix, atomic single-use resolution, saved place list/filter/detail/update/delete, folder-type isolation, and viewer read/write behavior.",
+    "e2eCommands": [
+      "./gradlew.bat test --tests com.picturejournal.place.api.PlaceControllerTests --rerun-tasks",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "redTeamCommands": [
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "artifactRefs": [
+      {
+        "id": "place-controller-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.place.api.PlaceControllerTests.xml",
+        "description": "Share intake, candidate resolution, saved place CRUD, folder-type, and role-matrix API report."
+      },
+      {
+        "id": "openapi-contract-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.OpenApiContractTests.xml",
+        "description": "OpenAPI parity report including share-intake and saved-place endpoints."
+      },
+      {
+        "id": "openapi-contract-artifact",
+        "kind": "api-artifact",
+        "path": "contracts/openapi/picture-journal.openapi.json",
+        "description": "Checked-in OpenAPI contract refreshed with G005 endpoints."
+      }
+    ],
+    "contractCoverage": [
+      {
+        "id": "g005-share-intake-create",
+        "contractRef": "G005:share-intake-create",
+        "obligation": "Authenticated clients can create share intake items from raw URL/title/text payloads and preserve the original payload plus normalized URL.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-share-intake"],
+        "adversarialCaseRefs": ["case-photo-diary-folder-denied"]
+      },
+      {
+        "id": "g005-candidate-extraction",
+        "contractRef": "G005:candidate-extraction",
+        "obligation": "Candidate extraction distinguishes one candidate, multiple candidates, and no candidate states for confirm/select/manual-fix flows.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-share-intake"],
+        "adversarialCaseRefs": ["case-multiple-candidates-require-selection", "case-zero-candidate-draft-manual-fix"]
+      },
+      {
+        "id": "g005-resolve-atomicity",
+        "contractRef": "G005:ResolveShareIntake-atomic",
+        "obligation": "ResolveShareIntake creates the saved place and marks the intake resolved once, rejecting replayed resolution attempts.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-resolve-intake"],
+        "adversarialCaseRefs": ["case-resolve-single-use"]
+      },
+      {
+        "id": "g005-saved-place-crud",
+        "contractRef": "G005:saved-place-crud",
+        "obligation": "Folder members can browse/detail saved places, and authorized writers can update/delete saved places with category/status/keyword/region filtering.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-saved-place-crud"],
+        "adversarialCaseRefs": ["case-viewer-write-denied"]
+      },
+      {
+        "id": "g005-folder-separation",
+        "contractRef": "G005:reels-place-only",
+        "obligation": "Saved places and share intake resolution are confined to REELS_PLACE folders and cannot leak into PHOTO_DIARY folders.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-share-intake"],
+        "adversarialCaseRefs": ["case-photo-diary-folder-denied"]
+      },
+      {
+        "id": "g005-openapi-contract",
+        "contractRef": "G005:openapi-contract",
+        "obligation": "The backend-owned OpenAPI contract exposes bearer-secured share-intake and saved-place operations without contract drift.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-openapi-contract"],
+        "adversarialCaseRefs": ["case-openapi-place-security-parity"]
+      }
+    ],
+    "surfaceEvidence": [
+      {
+        "id": "surface-share-intake",
+        "contractRef": "G005:share-intake-create",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["place-controller-report"]
+      },
+      {
+        "id": "surface-resolve-intake",
+        "contractRef": "G005:ResolveShareIntake-atomic",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["place-controller-report"]
+      },
+      {
+        "id": "surface-saved-place-crud",
+        "contractRef": "G005:saved-place-crud",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["place-controller-report"]
+      },
+      {
+        "id": "surface-openapi-contract",
+        "contractRef": "G005:openapi-contract",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report", "openapi-contract-artifact"]
+      }
+    ],
+    "adversarialCases": [
+      {
+        "id": "case-photo-diary-folder-denied",
+        "contractRef": "G005:reels-place-only",
+        "scenario": "A share intake is created against a PHOTO_DIARY folder.",
+        "expectedBehavior": "The request is rejected with INVALID_ARGUMENT.",
+        "verdict": "passed",
+        "artifactRefs": ["place-controller-report"]
+      },
+      {
+        "id": "case-multiple-candidates-require-selection",
+        "contractRef": "G005:candidate-extraction",
+        "scenario": "A share payload extracts two candidates and resolve is called without candidateId or manualName.",
+        "expectedBehavior": "The intake remains unresolved and the request is rejected with INVALID_ARGUMENT.",
+        "verdict": "passed",
+        "artifactRefs": ["place-controller-report"]
+      },
+      {
+        "id": "case-zero-candidate-draft-manual-fix",
+        "contractRef": "G005:candidate-extraction",
+        "scenario": "A URL-only share payload yields no candidate.",
+        "expectedBehavior": "The intake enters NEEDS_MANUAL_FIX, can be saved as DRAFT, and can later resolve from manual place fields.",
+        "verdict": "passed",
+        "artifactRefs": ["place-controller-report"]
+      },
+      {
+        "id": "case-resolve-single-use",
+        "contractRef": "G005:ResolveShareIntake-atomic",
+        "scenario": "A resolved intake is resolved a second time.",
+        "expectedBehavior": "The replay is rejected with CONFLICT.",
+        "verdict": "passed",
+        "artifactRefs": ["place-controller-report"]
+      },
+      {
+        "id": "case-viewer-write-denied",
+        "contractRef": "G005:folder-capability-policy",
+        "scenario": "A viewer reads saved places but tries to resolve an intake or patch a saved place.",
+        "expectedBehavior": "Reads succeed and writes are denied with FOLDER_WRITE_NOT_ALLOWED.",
+        "verdict": "passed",
+        "artifactRefs": ["place-controller-report"]
+      },
+      {
+        "id": "case-openapi-place-security-parity",
+        "contractRef": "G005:openapi-contract",
+        "scenario": "Runtime OpenAPI is compared with the checked-in contract after adding place endpoints.",
+        "expectedBehavior": "The checked-in contract matches runtime docs and includes bearer-protected share-intake and saved-place operations.",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report", "openapi-contract-artifact"]
+      }
+    ],
+    "blockers": []
+  },
+  "iteration": {
+    "status": "passed",
+    "evidence": "After implementing the saved-place and share-intake core, the focused place API suite and the full OpenAPI refresh plus Spring Boot test suite were rerun cleanly against the current repository state.",
+    "fullRerun": true,
+    "rerunCommands": [
+      "./gradlew.bat test --tests com.picturejournal.place.api.PlaceControllerTests --rerun-tasks",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "blockers": []
+  }
+}

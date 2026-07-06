@@ -1,0 +1,247 @@
+{
+  "architectReview": {
+    "architectureStatus": "CLEAR",
+    "productStatus": "CLEAR",
+    "codeStatus": "CLEAR",
+    "recommendation": "APPROVE",
+    "evidence": "The foundation review identified and resolved the remaining G001 gaps in current repo state: datasource fallback parity, decoupled OpenAPI refresh task, provider-aware storage validation, generic INTERNAL_ERROR responses, shared validation error envelope, runtime-test override handling, and non-production health detail exposure. Current file inspection shows the OpenAPI pipeline, folder write policy boundary, folder type separation, shared error taxonomy, and local runtime contract all align to the approved G001 scope.",
+    "commands": [
+      "read build.gradle.kts, src/main/resources/application.yml, src/main/java/com/picturejournal/shared/error/GlobalExceptionHandler.java, src/main/java/com/picturejournal/shared/config/StorageProperties.java",
+      "read src/test/java/com/picturejournal/OpenApiContractTests.java, src/test/java/com/picturejournal/OpenApiContractArtifactTests.java, src/test/java/com/picturejournal/LocalRuntimeContractTests.java, src/test/java/com/picturejournal/shared/error/GlobalExceptionHandlerTests.java, src/test/java/com/picturejournal/shared/config/StoragePropertiesContractTests.java",
+      "agent://0-G001FoundationReview",
+      "agent://3-G001ArchitectNarrative"
+    ],
+    "blockers": []
+  },
+  "executorQa": {
+    "status": "passed",
+    "e2eStatus": "passed",
+    "redTeamStatus": "passed",
+    "evidence": "Focused Gradle verification passed against the live repo state: OpenAPI contract parity, artifact refresh generation, Docker Postgres JDBC defaults/override handling, FolderCapabilityPolicy boundary behavior, global error envelope behavior, and S3-compatible storage validation failure mode. Docker Postgres was healthy during runtime verification.",
+    "e2eCommands": [
+      "docker compose ps",
+      "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks"
+    ],
+    "redTeamCommands": [
+      "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks"
+    ],
+    "artifactRefs": [
+      {
+        "id": "openapi-docs-artifact",
+        "kind": "api-artifact",
+        "path": "build/test-artifacts/g001-openapi-docs.json",
+        "description": "Generated /api-docs artifact used by the checked-in contract refresh path."
+      },
+      {
+        "id": "openapi-contract-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.OpenApiContractTests.xml",
+        "description": "Focused contract-parity report for checked-in OpenAPI vs runtime /api-docs."
+      },
+      {
+        "id": "openapi-refresh-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.OpenApiContractArtifactTests.xml",
+        "description": "Focused report proving the isolated contract-refresh artifact generation task."
+      },
+      {
+        "id": "runtime-contract-report",
+        "kind": "package-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.LocalRuntimeContractTests.xml",
+        "description": "Local Docker Postgres runtime contract report covering JDBC connectivity and documented env contract values."
+      },
+      {
+        "id": "folder-policy-report",
+        "kind": "package-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.folder.application.FolderCapabilityPolicyContractTests.xml",
+        "description": "FolderCapabilityPolicy boundary contract report."
+      },
+      {
+        "id": "error-envelope-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.shared.error.GlobalExceptionHandlerTests.xml",
+        "description": "Shared error envelope report covering forbidden, validation, and internal error responses."
+      },
+      {
+        "id": "storage-validation-report",
+        "kind": "package-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.shared.config.StoragePropertiesContractTests.xml",
+        "description": "Storage configuration validation report covering LOCAL defaults and invalid S3-compatible configuration rejection."
+      },
+      {
+        "id": "app-context-report",
+        "kind": "package-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.PictureJournalApplicationTests.xml",
+        "description": "Application context smoke report for the Spring Boot foundation skeleton."
+      }
+    ],
+    "contractCoverage": [
+      {
+        "id": "g001-foundation-skeleton",
+        "contractRef": "G001:foundation-skeleton",
+        "obligation": "The Spring Boot foundation skeleton boots with the intended base configuration in the test profile.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-app-context"],
+        "adversarialCaseRefs": ["case-invalid-s3-config"]
+      },
+      {
+        "id": "g001-folder-policy-boundary",
+        "contractRef": "G001:folder-capability-policy",
+        "obligation": "Folder-scoped writes route through FolderCapabilityPolicy and denied writes use the explicit foundation error code.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-folder-policy"],
+        "adversarialCaseRefs": ["case-folder-write-denied"]
+      },
+      {
+        "id": "g001-error-taxonomy",
+        "contractRef": "G001:shared-error-envelope",
+        "obligation": "Validation failures and internal errors use the shared foundation error envelope with stable error codes.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-error-envelope"],
+        "adversarialCaseRefs": ["case-validation-error", "case-internal-error"]
+      },
+      {
+        "id": "g001-openapi-pipeline",
+        "contractRef": "G001:openapi-contract-pipeline",
+        "obligation": "The backend-owned /api-docs surface matches the checked-in contract and refresh task can regenerate the artifact without unrelated runtime prerequisites.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-openapi-contract", "surface-openapi-refresh"],
+        "adversarialCaseRefs": ["case-openapi-drift-check"]
+      },
+      {
+        "id": "g001-local-runtime",
+        "contractRef": "G001:local-runtime-contract",
+        "obligation": "The documented Docker Postgres local runtime contract works with the configured JDBC/user/password/database defaults or overrides.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-local-runtime"],
+        "adversarialCaseRefs": ["case-runtime-override-path"]
+      },
+      {
+        "id": "g001-storage-seam",
+        "contractRef": "G001:minio-ready-storage-seam",
+        "obligation": "The MinIO-ready storage seam binds LOCAL defaults and rejects incomplete S3-compatible configuration before first use.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-storage-config"],
+        "adversarialCaseRefs": ["case-invalid-s3-config"]
+      }
+    ],
+    "surfaceEvidence": [
+      {
+        "id": "surface-app-context",
+        "contractRef": "G001:foundation-skeleton",
+        "surface": "package",
+        "invocation": "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["app-context-report"]
+      },
+      {
+        "id": "surface-folder-policy",
+        "contractRef": "G001:folder-capability-policy",
+        "surface": "package",
+        "invocation": "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["folder-policy-report"]
+      },
+      {
+        "id": "surface-error-envelope",
+        "contractRef": "G001:shared-error-envelope",
+        "surface": "api",
+        "invocation": "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["error-envelope-report"]
+      },
+      {
+        "id": "surface-openapi-contract",
+        "contractRef": "G001:openapi-contract-pipeline",
+        "surface": "api",
+        "invocation": "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report", "openapi-docs-artifact"]
+      },
+      {
+        "id": "surface-openapi-refresh",
+        "contractRef": "G001:openapi-contract-pipeline",
+        "surface": "package",
+        "invocation": "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-refresh-report", "openapi-docs-artifact"]
+      },
+      {
+        "id": "surface-local-runtime",
+        "contractRef": "G001:local-runtime-contract",
+        "surface": "package",
+        "invocation": "docker compose ps && ./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["runtime-contract-report"]
+      },
+      {
+        "id": "surface-storage-config",
+        "contractRef": "G001:minio-ready-storage-seam",
+        "surface": "package",
+        "invocation": "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["storage-validation-report"]
+      }
+    ],
+    "adversarialCases": [
+      {
+        "id": "case-folder-write-denied",
+        "contractRef": "G001:folder-capability-policy",
+        "scenario": "A folder-scoped write is denied by policy.",
+        "expectedBehavior": "The boundary throws and surfaces FOLDER_WRITE_NOT_ALLOWED rather than bypassing authorization.",
+        "verdict": "passed",
+        "artifactRefs": ["folder-policy-report"]
+      },
+      {
+        "id": "case-validation-error",
+        "contractRef": "G001:shared-error-envelope",
+        "scenario": "A request body fails bean validation.",
+        "expectedBehavior": "The shared error envelope returns INVALID_ARGUMENT with structured field details.",
+        "verdict": "passed",
+        "artifactRefs": ["error-envelope-report"]
+      },
+      {
+        "id": "case-internal-error",
+        "contractRef": "G001:shared-error-envelope",
+        "scenario": "An internal error path is triggered through generic or INTERNAL_ERROR domain exceptions.",
+        "expectedBehavior": "The client receives a generic INTERNAL_ERROR message instead of leaked internal text.",
+        "verdict": "passed",
+        "artifactRefs": ["error-envelope-report"]
+      },
+      {
+        "id": "case-openapi-drift-check",
+        "contractRef": "G001:openapi-contract-pipeline",
+        "scenario": "The checked-in contract is compared against the live /api-docs payload.",
+        "expectedBehavior": "Contract drift is detected by the parity test and the refresh task produces the artifact through the isolated generation path.",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report", "openapi-refresh-report", "openapi-docs-artifact"]
+      },
+      {
+        "id": "case-runtime-override-path",
+        "contractRef": "G001:local-runtime-contract",
+        "scenario": "The database identity is derived from the configured JDBC/POSTGRES_DB override path rather than a hard-coded default.",
+        "expectedBehavior": "The runtime contract test accepts both documented defaults and supported overrides.",
+        "verdict": "passed",
+        "artifactRefs": ["runtime-contract-report"]
+      },
+      {
+        "id": "case-invalid-s3-config",
+        "contractRef": "G001:minio-ready-storage-seam",
+        "scenario": "S3_COMPATIBLE storage is selected with blank endpoint or credentials.",
+        "expectedBehavior": "Configuration binding fails early before runtime use.",
+        "verdict": "passed",
+        "artifactRefs": ["storage-validation-report"]
+      }
+    ],
+    "blockers": []
+  },
+  "iteration": {
+    "status": "passed",
+    "evidence": "After addressing every review finding surfaced during G001 work, the focused foundation verification suite and isolated OpenAPI refresh task were rerun cleanly against the current repository state with no remaining test failures.",
+    "fullRerun": true,
+    "rerunCommands": [
+      "./gradlew.bat test generateOpenApiContract refreshOpenApiContract --rerun-tasks"
+    ],
+    "blockers": []
+  }
+}

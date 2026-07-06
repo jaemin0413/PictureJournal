@@ -1,0 +1,176 @@
+{
+  "architectReview": {
+    "architectureStatus": "CLEAR",
+    "productStatus": "CLEAR",
+    "codeStatus": "CLEAR",
+    "recommendation": "APPROVE",
+    "evidence": "G006 backend hardening and deployment readiness surfaces are in place: geocode/reverse-geocode cache-before-throttle behavior with RATE_LIMITED responses, readiness diagnostics for unresolved share drafts and required home-server env keys, a contract/test CI workflow, checked-in home-server readiness artifact, refreshed OpenAPI contract, and verification coverage for the operational paths.",
+    "commands": [
+      "./gradlew.bat test --tests com.picturejournal.ops.api.OperationsControllerTests --rerun-tasks",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+      "read artifacts/g006/home-server-readiness.json",
+      "read .github/workflows/ci.yml"
+    ],
+    "blockers": []
+  },
+  "executorQa": {
+    "status": "passed",
+    "e2eStatus": "passed",
+    "redTeamStatus": "passed",
+    "evidence": "The focused operations API suite and the full Spring Boot/OpenAPI verification suite pass. Tests cover geocode cache hits, reverse-geocode cache hits, rate-limit/backoff signaling, readiness diagnostics for missing env values, unresolved share intake monitoring, and OpenAPI parity for operational endpoints.",
+    "e2eCommands": [
+      "./gradlew.bat test --tests com.picturejournal.ops.api.OperationsControllerTests --rerun-tasks",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "redTeamCommands": [
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "artifactRefs": [
+      {
+        "id": "ops-controller-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.ops.api.OperationsControllerTests.xml",
+        "description": "Operations readiness, geocode cache/throttle, and unresolved intake monitoring report."
+      },
+      {
+        "id": "openapi-contract-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.OpenApiContractTests.xml",
+        "description": "OpenAPI parity report including operational endpoints."
+      },
+      {
+        "id": "home-server-readiness",
+        "kind": "deployment-artifact",
+        "path": "artifacts/g006/home-server-readiness.json",
+        "description": "Home-server env checklist and deployment gates for tomorrow's real values."
+      },
+      {
+        "id": "ci-contract-gate",
+        "kind": "ci-artifact",
+        "path": ".github/workflows/ci.yml",
+        "description": "CI workflow that runs OpenAPI generation, refresh, tests, and checked-in contract drift detection."
+      }
+    ],
+    "contractCoverage": [
+      {
+        "id": "g006-geocode-cache-throttle",
+        "contractRef": "G006:geocode-throttle-cache-backoff",
+        "obligation": "Geocode and reverse-geocode paths prefer cache hits and rate-limit uncached provider misses with a clear backoff signal.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-geocode"],
+        "adversarialCaseRefs": ["case-geocode-rate-limited"]
+      },
+      {
+        "id": "g006-unresolved-draft-monitoring",
+        "contractRef": "G006:unresolved-draft-monitoring",
+        "obligation": "Operations readiness reports unresolved share intake count for draft monitoring.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-readiness"],
+        "adversarialCaseRefs": ["case-unresolved-intake-visible"]
+      },
+      {
+        "id": "g006-deployment-readiness",
+        "contractRef": "G006:home-server-readiness",
+        "obligation": "Home-server deployment readiness identifies real env values the user must supply and keeps dev-only secrets out of the deployment contract.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-readiness", "surface-readiness-artifact"],
+        "adversarialCaseRefs": ["case-missing-env-visible"]
+      },
+      {
+        "id": "g006-contract-ci-gate",
+        "contractRef": "G006:contract-ci-gates",
+        "obligation": "Contract drift is guarded by a CI workflow and the local OpenAPI parity/refresh tests.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-ci", "surface-openapi-contract"],
+        "adversarialCaseRefs": ["case-openapi-ops-parity"]
+      }
+    ],
+    "surfaceEvidence": [
+      {
+        "id": "surface-geocode",
+        "contractRef": "G006:geocode-throttle-cache-backoff",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["ops-controller-report"]
+      },
+      {
+        "id": "surface-readiness",
+        "contractRef": "G006:unresolved-draft-monitoring",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["ops-controller-report"]
+      },
+      {
+        "id": "surface-readiness-artifact",
+        "contractRef": "G006:home-server-readiness",
+        "surface": "deployment",
+        "invocation": "read artifacts/g006/home-server-readiness.json",
+        "verdict": "passed",
+        "artifactRefs": ["home-server-readiness"]
+      },
+      {
+        "id": "surface-ci",
+        "contractRef": "G006:contract-ci-gates",
+        "surface": "ci",
+        "invocation": "read .github/workflows/ci.yml",
+        "verdict": "passed",
+        "artifactRefs": ["ci-contract-gate"]
+      },
+      {
+        "id": "surface-openapi-contract",
+        "contractRef": "G006:contract-ci-gates",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report"]
+      }
+    ],
+    "adversarialCases": [
+      {
+        "id": "case-geocode-rate-limited",
+        "contractRef": "G006:geocode-throttle-cache-backoff",
+        "scenario": "A client burns through uncached geocode misses in the active window.",
+        "expectedBehavior": "The next uncached request returns RATE_LIMITED with HTTP 429 while cached requests remain available.",
+        "verdict": "passed",
+        "artifactRefs": ["ops-controller-report"]
+      },
+      {
+        "id": "case-unresolved-intake-visible",
+        "contractRef": "G006:unresolved-draft-monitoring",
+        "scenario": "A zero-candidate share intake remains unresolved.",
+        "expectedBehavior": "The readiness endpoint reports unresolvedShareIntakeCount > 0.",
+        "verdict": "passed",
+        "artifactRefs": ["ops-controller-report"]
+      },
+      {
+        "id": "case-missing-env-visible",
+        "contractRef": "G006:home-server-readiness",
+        "scenario": "Real home-server env values are not present in the current local process.",
+        "expectedBehavior": "Readiness reports missingHomeServerEnvKeys instead of silently treating dev placeholders as production-ready.",
+        "verdict": "passed",
+        "artifactRefs": ["ops-controller-report", "home-server-readiness"]
+      },
+      {
+        "id": "case-openapi-ops-parity",
+        "contractRef": "G006:contract-ci-gates",
+        "scenario": "Runtime OpenAPI is compared with the checked-in contract after adding ops endpoints.",
+        "expectedBehavior": "The checked-in contract matches runtime docs and includes the ops/readiness and geocode surfaces.",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report"]
+      }
+    ],
+    "blockers": []
+  },
+  "iteration": {
+    "status": "passed",
+    "evidence": "After adding G006 operational hardening and deployment readiness surfaces, the focused ops suite and the full OpenAPI refresh plus Spring Boot test suite were rerun cleanly against the current repository state.",
+    "fullRerun": true,
+    "rerunCommands": [
+      "./gradlew.bat test --tests com.picturejournal.ops.api.OperationsControllerTests --rerun-tasks",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "blockers": []
+  }
+}

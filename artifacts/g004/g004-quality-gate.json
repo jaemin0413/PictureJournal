@@ -1,0 +1,200 @@
+{
+  "architectReview": {
+    "architectureStatus": "CLEAR",
+    "productStatus": "CLEAR",
+    "codeStatus": "CLEAR",
+    "recommendation": "APPROVE",
+    "evidence": "G004 is implemented as a backend-owned, client-neutral photo diary core contract usable by both web and mobile clients: direct single-image upload, EXIF metadata extraction, manual GPS/location correction, folder-member visibility, title/body/place/tag editing, CRUD, filtered list, detail, and map projection endpoints. The implementation preserves the approved folder-type separation by allowing diary entries only in PHOTO_DIARY folders and routes all diary writes through FolderCapabilityPolicy.",
+    "commands": [
+      "read .gjc/_session-019f32ab-f4df-7000-97a4-bc9e252f5334/ultragoal/goals.json:raw",
+      "read .gjc/_session-019f3160-45c4-7000-b101-3c4de80dc410/plans/ralplan/019f3160-45c4-7000-b101-3c4de80dc410/pending-approval.md",
+      "read .gjc/_session-019f3160-45c4-7000-b101-3c4de80dc410/specs/deep-interview-picture-journal-mvp.md:294-438",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "blockers": []
+  },
+  "executorQa": {
+    "status": "passed",
+    "e2eStatus": "passed",
+    "redTeamStatus": "passed",
+    "evidence": "The full Spring Boot verification suite and OpenAPI refresh pipeline pass. New diary API tests exercise upload, metadata dimensions, manual location fallback when EXIF GPS is missing, create/list/filter/map/detail/update/delete, folder type isolation, viewer read/write role behavior, and invalid upload rejection.",
+    "e2eCommands": [
+      "./gradlew.bat test --tests com.picturejournal.diary.api.DiaryControllerTests --rerun-tasks",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "redTeamCommands": [
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "artifactRefs": [
+      {
+        "id": "diary-controller-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.diary.api.DiaryControllerTests.xml",
+        "description": "Photo diary upload, CRUD, location, map, folder-type, and role-matrix API test report."
+      },
+      {
+        "id": "openapi-contract-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.OpenApiContractTests.xml",
+        "description": "OpenAPI parity report including bearer-protected media and diary endpoints."
+      },
+      {
+        "id": "openapi-refresh-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.OpenApiContractArtifactTests.xml",
+        "description": "OpenAPI artifact generation and refresh report."
+      },
+      {
+        "id": "openapi-contract-artifact",
+        "kind": "api-artifact",
+        "path": "contracts/openapi/picture-journal.openapi.json",
+        "description": "Checked-in OpenAPI contract refreshed with media and photo diary endpoints."
+      }
+    ],
+    "contractCoverage": [
+      {
+        "id": "g004-single-photo-upload",
+        "contractRef": "G004:single-photo-upload",
+        "obligation": "Authenticated clients can upload exactly one supported image and receive a persisted media asset with dimensions and EXIF metadata fields.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-media-upload"],
+        "adversarialCaseRefs": ["case-non-image-rejected"]
+      },
+      {
+        "id": "g004-exif-location-correction",
+        "contractRef": "G004:exif-location-correction",
+        "obligation": "Diary creation can use EXIF GPS when present and requires explicit latitude/longitude correction when GPS is unavailable; saved coordinates can be corrected on update.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-diary-crud"],
+        "adversarialCaseRefs": ["case-missing-gps-requires-location"]
+      },
+      {
+        "id": "g004-title-body-tags",
+        "contractRef": "G004:title-body-tags",
+        "obligation": "Photo diary entries support title, body, place name, captured time, and normalized tag editing.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-diary-crud"],
+        "adversarialCaseRefs": ["case-duplicate-tags-normalized"]
+      },
+      {
+        "id": "g004-crud-list-detail-map",
+        "contractRef": "G004:crud-list-detail-map",
+        "obligation": "Folder members can read list/detail/map views, and authorized writers can create, update, and delete diary entries.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-diary-crud", "surface-diary-map"],
+        "adversarialCaseRefs": ["case-viewer-write-denied"]
+      },
+      {
+        "id": "g004-folder-type-separation",
+        "contractRef": "G004:photo-diary-folder-only",
+        "obligation": "Photo diary entries cannot be created in REELS_PLACE folders, preserving photo_diary and reels_place separation.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-diary-crud"],
+        "adversarialCaseRefs": ["case-reels-folder-denied"]
+      },
+      {
+        "id": "g004-web-mobile-parity-contract",
+        "contractRef": "G004:web-mobile-near-parity",
+        "obligation": "The backend-owned OpenAPI contract exposes the same bearer-secured photo diary behavior to both web and mobile clients rather than creating platform-specific divergent flows.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-openapi-contract"],
+        "adversarialCaseRefs": ["case-openapi-diary-security-parity"]
+      }
+    ],
+    "surfaceEvidence": [
+      {
+        "id": "surface-media-upload",
+        "contractRef": "G004:single-photo-upload",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["diary-controller-report"]
+      },
+      {
+        "id": "surface-diary-crud",
+        "contractRef": "G004:crud-list-detail-map",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["diary-controller-report"]
+      },
+      {
+        "id": "surface-diary-map",
+        "contractRef": "G004:map-view",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["diary-controller-report"]
+      },
+      {
+        "id": "surface-openapi-contract",
+        "contractRef": "G004:web-mobile-near-parity",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report", "openapi-refresh-report", "openapi-contract-artifact"]
+      }
+    ],
+    "adversarialCases": [
+      {
+        "id": "case-non-image-rejected",
+        "contractRef": "G004:single-photo-upload",
+        "scenario": "A client attempts to direct-upload a text file as media.",
+        "expectedBehavior": "The request is rejected with INVALID_ARGUMENT.",
+        "verdict": "passed",
+        "artifactRefs": ["diary-controller-report"]
+      },
+      {
+        "id": "case-missing-gps-requires-location",
+        "contractRef": "G004:exif-location-correction",
+        "scenario": "A valid image has no EXIF GPS and the diary create request omits latitude/longitude.",
+        "expectedBehavior": "The request is rejected with INVALID_ARGUMENT until the user manually supplies a location.",
+        "verdict": "passed",
+        "artifactRefs": ["diary-controller-report"]
+      },
+      {
+        "id": "case-reels-folder-denied",
+        "contractRef": "G004:photo-diary-folder-only",
+        "scenario": "A diary entry is created in a REELS_PLACE folder.",
+        "expectedBehavior": "The request is rejected with INVALID_ARGUMENT.",
+        "verdict": "passed",
+        "artifactRefs": ["diary-controller-report"]
+      },
+      {
+        "id": "case-viewer-write-denied",
+        "contractRef": "G004:folder-capability-policy",
+        "scenario": "A viewer reads a diary entry and then attempts to update it.",
+        "expectedBehavior": "The read succeeds and the write is denied with FOLDER_WRITE_NOT_ALLOWED.",
+        "verdict": "passed",
+        "artifactRefs": ["diary-controller-report"]
+      },
+      {
+        "id": "case-duplicate-tags-normalized",
+        "contractRef": "G004:title-body-tags",
+        "scenario": "A diary create request sends duplicate tags that differ only by case or whitespace.",
+        "expectedBehavior": "The entry is persisted with normalized unique tags.",
+        "verdict": "passed",
+        "artifactRefs": ["diary-controller-report"]
+      },
+      {
+        "id": "case-openapi-diary-security-parity",
+        "contractRef": "G004:web-mobile-near-parity",
+        "scenario": "Runtime OpenAPI is compared with the checked-in contract after adding diary and media endpoints.",
+        "expectedBehavior": "The checked-in contract matches runtime docs and exposes bearer-protected diary/media operations for both client types.",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report", "openapi-refresh-report", "openapi-contract-artifact"]
+      }
+    ],
+    "blockers": []
+  },
+  "iteration": {
+    "status": "passed",
+    "evidence": "After implementing the media and diary core, the focused diary API suite and the full OpenAPI refresh plus Spring Boot test suite were rerun cleanly against the current repository state.",
+    "fullRerun": true,
+    "rerunCommands": [
+      "./gradlew.bat test --tests com.picturejournal.diary.api.DiaryControllerTests --rerun-tasks",
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "blockers": []
+  }
+}

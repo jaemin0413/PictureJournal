@@ -1,0 +1,43 @@
+package com.picturejournal;
+
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.MockMvc;
+
+@ActiveProfiles("test")
+@AutoConfigureMockMvc
+@SpringBootTest
+class OpenApiContractArtifactTests {
+
+    @Autowired
+    private MockMvc mockMvc;
+
+    @Test
+    void writesOpenApiArtifactForContractRefreshTask() throws Exception {
+        MvcResult result = mockMvc.perform(get("/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith("application/json"))
+                .andExpect(jsonPath("$.openapi").exists())
+                .andExpect(jsonPath("$.info.title").value("Picture Journal API"))
+                .andReturn();
+
+        Path artifactPath = Path.of("build", "test-artifacts", "g001-openapi-docs.json");
+        Files.createDirectories(artifactPath.getParent());
+        Files.writeString(
+                artifactPath,
+                result.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                StandardCharsets.UTF_8);
+    }
+}

@@ -1,0 +1,186 @@
+{
+  "version": 1,
+  "brief": "Picture Journal MVP execution brief derived from the approved ralplan artifact at `.gjc/_session-019f3160-45c4-7000-b101-3c4de80dc410/plans/ralplan/019f3160-45c4-7000-b101-3c4de80dc410/pending-approval.md`.\n\nExecution constraints:\n- Backend uses Spring Boot + DDD and owns contracts.\n- `photo_diary` and `reels_place` stay separated.\n- All folder-scoped writes must pass `FolderCapabilityPolicy`.\n- Mobile photo diary authoring is near-parity core flow, not a minimal shell.\n- `ResolveShareIntake` must remain atomic and synchronous at the application layer.\n- Native mobile share entry is mandatory.\n- Tonight's local runtime may use Docker Postgres and dev-only `.env` values.\n- Home-server deployment `.env` and real MinIO integration can be finalized tomorrow, but the design and test surfaces must anticipate them.\n\n@goal: Lock the foundation and local runtime contract\nCreate the initial project skeleton and first-sprint foundation needed to execute safely: Spring Boot DDD structure, shared error taxonomy/enums, `FolderCapabilityPolicy` ownership boundary, OpenAPI/contracts pipeline shape, and a local development runtime contract that works with Docker Postgres and placeholder dev secrets. Produce `.env.example` plus the minimal local `.env` contract assumptions without baking deployment secrets into the codebase.\n\n@goal: Prove the native share spike path\nDefine and implement the earliest viable iOS/Android native share intake spike path with explicit go/no-go criteria for warm start, cold start, unauthenticated recovery, folder continuity, and payload durability. Preserve the ability to revise the mobile integration strategy if the spike fails.\n\n@goal: Build the collaboration core\nImplement auth, folders, memberships, invites, and capability checks so folder-scoped collaboration works consistently across clients and the domain rules are enforced server-side.\n\n@goal: Deliver near-parity photo diary core on web and mobile\nImplement the core photo diary flow for both web and mobile with near-parity behavior: single photo upload path, EXIF handling, location correction, title/body/tag editing, and CRUD/list/detail/map experiences aligned to the approved MVP scope.\n\n@goal: Deliver the saved place and share-intake core\nImplement share intake creation and resolution, candidate extraction, confirm/select/manual fix flows, atomic `ResolveShareIntake`, and saved place CRUD while keeping `reels_place` separate from `photo_diary`.\n\n@goal: Finish platform hardening and deployment readiness\nAdd web admin richness, mobile share polish, cross-client consistency hardening, geocode throttle/cache/backoff, observability, contract CI gates, unresolved draft monitoring, MinIO-ready storage integration seams, and the home-server deployment readiness checklist including the real `.env` values that the user must supply tomorrow.",
+  "gjcGoalMode": "aggregate",
+  "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+  "goals": [
+    {
+      "id": "G001",
+      "title": "Lock the foundation and local runtime contract",
+      "objective": "Create the initial project skeleton and first-sprint foundation needed to execute safely: Spring Boot DDD structure, shared error taxonomy/enums, `FolderCapabilityPolicy` ownership boundary, OpenAPI/contracts pipeline shape, and a local development runtime contract that works with Docker Postgres and placeholder dev secrets. Produce `.env.example` plus the minimal local `.env` contract assumptions without baking deployment secrets into the codebase.",
+      "status": "complete",
+      "createdAt": "2026-07-05T14:38:05.320Z",
+      "updatedAt": "2026-07-05T15:39:36.283Z",
+      "startedAt": "2026-07-05T14:38:22.289Z",
+      "completedAt": "2026-07-05T15:39:36.283Z",
+      "evidence": "Implemented and verified the G001 foundation skeleton, policy boundary, error envelope, OpenAPI contract pipeline, local runtime contract, and MinIO-ready storage seam; focused Gradle verification plus Docker Postgres runtime checks are recorded in artifacts/g001/g001-quality-gate.json.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "ec164f08-3c70-4d4b-84b3-dd3e796b5cd1",
+        "verifiedAt": "2026-07-05T15:39:36.283Z",
+        "goalId": "G001",
+        "receiptKind": "per-goal",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "106a5f293a2e07c91da8a0fe83b1ca748b7e022be339748ac98fbb4ba242c3ea",
+        "planGeneration": "4feeac886c92ecf077dfb96e7a51e464bbdd4d6534e8113acb0211a1a53a5844",
+        "basis": {
+          "planHashBeforeCheckpoint": "9d64b9f306c67a0b4ed6417b150a7ae0f46e93028c91da52939ff5bdaa4acc2c",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "26f60847-29fa-49ab-af60-da04b6146f6a",
+          "goalUpdatedAtBeforeCheckpoint": "2026-07-05T15:39:36.283Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G001"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "ff31266e8429e92ef1ec7538ad7e0b87d39e44daba3942d137e8490400afb2ed"
+        },
+        "checkpointLedgerEventId": "b52d111c-f5d3-4fef-8886-bc053612f85f"
+      }
+    },
+    {
+      "id": "G002",
+      "title": "Prove the native share spike path",
+      "objective": "Define and implement the earliest viable iOS/Android native share intake spike path with explicit go/no-go criteria for warm start, cold start, unauthenticated recovery, folder continuity, and payload durability. Preserve the ability to revise the mobile integration strategy if the spike fails.",
+      "status": "blocked",
+      "createdAt": "2026-07-05T14:38:05.320Z",
+      "updatedAt": "2026-07-06T04:54:39.316Z",
+      "startedAt": "2026-07-05T15:39:36.402Z",
+      "evidence": "Backend share-spike draft contract, REST endpoints, OpenAPI contract, and focused recovery/durability tests are implemented and passing. Remaining blocker is real iOS/Android native share-sheet runtime proof, which requires human-controlled device or simulator execution not available in this backend-only Windows session. See artifacts/g002/g002-spike-blocker.json."
+    },
+    {
+      "id": "G003",
+      "title": "Build the collaboration core",
+      "objective": "Implement auth, folders, memberships, invites, and capability checks so folder-scoped collaboration works consistently across clients and the domain rules are enforced server-side.",
+      "status": "complete",
+      "createdAt": "2026-07-05T14:38:05.320Z",
+      "updatedAt": "2026-07-06T05:48:41.833Z",
+      "startedAt": "2026-07-06T04:54:46.321Z",
+      "completedAt": "2026-07-06T05:48:41.833Z",
+      "evidence": "Implemented and verified the G003 collaboration core: PBKDF2-based auth, session TTL, folder create/list/filter/detail/update, invite create/lookup/accept, member listing, FolderCapabilityPolicy enforcement, OpenAPI bearer/error contract metadata, and file-store hardening. Evidence is recorded in artifacts/g003/g003-quality-gate.json.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "17f1e610-7625-4dda-9a84-bf9710799002",
+        "verifiedAt": "2026-07-06T05:48:41.833Z",
+        "goalId": "G003",
+        "receiptKind": "per-goal",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "bfd383136015f35fa15d50a70a809b4fc1f08570312a704f0732f2a3891229f1",
+        "planGeneration": "2be524f4ab9852fdc73a19da799aecd4c14ca224205a14ca8b680504f32fabf4",
+        "basis": {
+          "planHashBeforeCheckpoint": "b609a4b29a6fb8cd3fd2ad22108079fb96f61945e770c644864eb851e88b603c",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "71a1d5bf-d80a-427b-8bbb-1cdf08d78fdb",
+          "goalUpdatedAtBeforeCheckpoint": "2026-07-06T05:48:41.833Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G003"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "779859c03562de6404f2bb486010c44e35025421abfe0a112b4ed36ede744515"
+        },
+        "checkpointLedgerEventId": "c5748f3c-7598-44be-a923-6b522db10f8e"
+      }
+    },
+    {
+      "id": "G004",
+      "title": "Deliver near-parity photo diary core on web and mobile",
+      "objective": "Implement the core photo diary flow for both web and mobile with near-parity behavior: single photo upload path, EXIF handling, location correction, title/body/tag editing, and CRUD/list/detail/map experiences aligned to the approved MVP scope.",
+      "status": "complete",
+      "createdAt": "2026-07-05T14:38:05.320Z",
+      "updatedAt": "2026-07-06T09:43:05.529Z",
+      "startedAt": "2026-07-06T05:48:41.879Z",
+      "completedAt": "2026-07-06T09:43:05.529Z",
+      "evidence": "Implemented and verified the G004 photo diary core as a backend-owned near-parity contract for web and mobile clients: direct single-photo upload, EXIF metadata extraction, manual location correction, title/body/place/tag editing, CRUD/list/detail/map endpoints, PHOTO_DIARY folder-type isolation, and FolderCapabilityPolicy-protected writes. Evidence is recorded in artifacts/g004/g004-quality-gate.json.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "15c005da-a22d-45ea-b244-95fb836d3bc0",
+        "verifiedAt": "2026-07-06T09:43:05.529Z",
+        "goalId": "G004",
+        "receiptKind": "per-goal",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "3892e26ea93856527069265f96732d8126dee9c90c7a4402e1010374fe739792",
+        "planGeneration": "5b510d05f81e4e1e7d3edeaf8cb3cf4810eeadac8f1e4224d5e7d1fa7b26d440",
+        "basis": {
+          "planHashBeforeCheckpoint": "1f3d6136b35d1bb6c5f1c11c31c5648b2d9e727712f16f772258e776e535ab7b",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "d5ef5b0a-8ea5-433c-a458-560c799622f3",
+          "goalUpdatedAtBeforeCheckpoint": "2026-07-06T09:43:05.529Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G004"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "5c57592c7bb2ca4a4ed3cca1272422f4c249401619f4881dce725673666345ff"
+        },
+        "checkpointLedgerEventId": "0749bb95-c459-40d2-8f8e-361628a1a124"
+      }
+    },
+    {
+      "id": "G005",
+      "title": "Deliver the saved place and share-intake core",
+      "objective": "Implement share intake creation and resolution, candidate extraction, confirm/select/manual fix flows, atomic `ResolveShareIntake`, and saved place CRUD while keeping `reels_place` separate from `photo_diary`.",
+      "status": "complete",
+      "createdAt": "2026-07-05T14:38:05.320Z",
+      "updatedAt": "2026-07-06T09:51:07.618Z",
+      "startedAt": "2026-07-06T09:43:05.572Z",
+      "completedAt": "2026-07-06T09:51:07.618Z",
+      "evidence": "Implemented and verified the G005 saved-place and share-intake core: raw share intake creation, deterministic candidate extraction, confirm/select/manual-fix resolution flows, synchronized single-use ResolveShareIntake, saved place CRUD/filtering, REELS_PLACE isolation, and FolderCapabilityPolicy-protected writes. Evidence is recorded in artifacts/g005/g005-quality-gate.json.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "b30343c2-8b88-4b58-80f3-2a66a3a31869",
+        "verifiedAt": "2026-07-06T09:51:07.618Z",
+        "goalId": "G005",
+        "receiptKind": "per-goal",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "eef0895b6e348e5fc58c42c8e714796a667d35570e7808dd9c628164fc0f3171",
+        "planGeneration": "0055580a94037606e9463531e6875e88153fc524d87096f3fb5a4460151d5825",
+        "basis": {
+          "planHashBeforeCheckpoint": "8ec7d9c8239e0c6f3bebee132880020c30d9d7c450425d21e2ee6be05f033ade",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "f52bbc96-918c-46be-9feb-92c91df5ea88",
+          "goalUpdatedAtBeforeCheckpoint": "2026-07-06T09:51:07.618Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G005"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "715ee5eeac03c19b52e2403b9f883fd17bbe2d7f6131ee13542a39c2972cb6bf"
+        },
+        "checkpointLedgerEventId": "68f13a73-9a50-49e1-b145-305738f2064b"
+      }
+    },
+    {
+      "id": "G006",
+      "title": "Finish platform hardening and deployment readiness",
+      "objective": "Add web admin richness, mobile share polish, cross-client consistency hardening, geocode throttle/cache/backoff, observability, contract CI gates, unresolved draft monitoring, MinIO-ready storage integration seams, and the home-server deployment readiness checklist including the real `.env` values that the user must supply tomorrow.",
+      "status": "complete",
+      "createdAt": "2026-07-05T14:38:05.320Z",
+      "updatedAt": "2026-07-06T09:55:37.810Z",
+      "startedAt": "2026-07-06T09:51:07.668Z",
+      "completedAt": "2026-07-06T09:55:37.810Z",
+      "evidence": "Implemented and verified G006 backend hardening and deployment readiness: geocode cache/throttle/backoff surfaces, readiness diagnostics for unresolved share intakes and required home-server env keys, contract CI workflow, refreshed OpenAPI contract, and home-server readiness artifact. Evidence is recorded in artifacts/g006/g006-quality-gate.json.",
+      "completionVerification": {
+        "schemaVersion": 1,
+        "receiptId": "236d7d8c-776a-4b11-979f-b0008e9fbf2b",
+        "verifiedAt": "2026-07-06T09:55:37.810Z",
+        "goalId": "G006",
+        "receiptKind": "per-goal",
+        "goalStatusBeforeCheckpoint": "active",
+        "gjcGoalMode": "aggregate",
+        "gjcObjective": "Complete the durable ultragoal plan in .gjc/ultragoal/goals.json, including later accepted/appended stories, under the original brief constraints; use .gjc/ultragoal/ledger.jsonl as the audit trail.",
+        "qualityGateHash": "d165b47df39759c3ba54a325d0e2ff9f10ebc48894582cb7324d52d6df9f826a",
+        "planGeneration": "f13b74cf20c2b9363a797765fa2eebf896cd2ebf3380a4f83a5c6f19d21cd71d",
+        "basis": {
+          "planHashBeforeCheckpoint": "84f79b3f3708ce9d88a9bb1bfdf2b69d2f0f0b7fe0a76c4e5f628663fe333b51",
+          "latestRelevantLedgerEventIdBeforeCheckpoint": "7b0af12d-0961-49f1-a1af-65a6fa414b5c",
+          "goalUpdatedAtBeforeCheckpoint": "2026-07-06T09:55:37.810Z",
+          "relevantGoalIdsBeforeCheckpoint": [
+            "G006"
+          ],
+          "requiredGoalSetHashBeforeCheckpoint": "be0ee36851e3599992a18ba24c9e7092578f9a50abe19a272f31cecd5d98cf49"
+        },
+        "checkpointLedgerEventId": "65d5f434-7e2b-443c-9bac-6caac56e44af"
+      }
+    }
+  ],
+  "createdAt": "2026-07-05T14:38:05.320Z",
+  "updatedAt": "2026-07-06T09:55:37.810Z",
+  "state_revision": 13
+}

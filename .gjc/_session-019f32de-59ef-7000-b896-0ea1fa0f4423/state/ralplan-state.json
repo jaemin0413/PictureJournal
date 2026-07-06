@@ -1,0 +1,26 @@
+{
+  "run_id": "019f32de-59ef-7000-b896-0ea1fa0f4423",
+  "skill": "ralplan",
+  "active": true,
+  "current_phase": "architect",
+  "version": 2,
+  "updated_at": "2026-07-05T15:24:42.008Z",
+  "receipt": {
+    "version": 1,
+    "skill": "ralplan",
+    "owner": "gjc-runtime",
+    "command": "gjc ralplan persist-run-id",
+    "state_path": "C:\\Users\\prome\\Desktop\\PROJECT\\PictureJournal\\.gjc\\state\\sessions\\019f32de-59ef-7000-b896-0ea1fa0f4423\\skill-active-state.json",
+    "storage_path": "C:\\Users\\prome\\Desktop\\PROJECT\\PictureJournal\\.gjc\\state\\sessions\\019f32de-59ef-7000-b896-0ea1fa0f4423\\ralplan-state.json",
+    "mutated_at": "2026-07-05T15:24:42.010Z",
+    "fresh_until": "2026-07-05T15:54:42.010Z",
+    "status": "fresh",
+    "mutation_id": "ralplan:2026-07-05T15:24:42.010Z",
+    "content_sha256": {
+      "algorithm": "sha256",
+      "value": "56fdd8d8eb8fc514de7bc7c8f9bde2d180e8f0bc6db495384f89c9d832152c58",
+      "covered_path": "C:\\Users\\prome\\Desktop\\PROJECT\\PictureJournal\\.gjc\\_session-019f32de-59ef-7000-b896-0ea1fa0f4423\\state\\ralplan-state.json",
+      "computed_at": "2026-07-05T15:24:42.010Z"
+    }
+  }
+}

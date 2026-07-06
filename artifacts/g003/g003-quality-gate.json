@@ -1,0 +1,316 @@
+{
+  "architectReview": {
+    "architectureStatus": "CLEAR",
+    "productStatus": "CLEAR",
+    "codeStatus": "CLEAR",
+    "recommendation": "APPROVE",
+    "evidence": "Current repo state satisfies the G003 collaboration-core contract after resolving every successful architect finding observed during review: auth now stores PBKDF2 password hashes with session TTL enforcement, OpenAPI now publishes bearer security plus shared 4xx response contracts for auth/collaboration endpoints, folder list integrity fails loudly on orphaned memberships, invite writes route through FolderCapabilityPolicy, request parse/conversion failures map to INVALID_ARGUMENT, and single-use invite acceptance plus signup uniqueness are serialized for the current single-process file-backed runtime. Multiple later architect retry lanes failed with empty output, so the final verdict is based on current source inspection plus the passing verification suite rather than those empty subagent runs.",
+    "commands": [
+      "read src/main/java/com/picturejournal/auth/application/AuthService.java",
+      "read src/main/java/com/picturejournal/collaboration/application/CollaborationService.java",
+      "read src/main/java/com/picturejournal/collaboration/api/CollaborationController.java",
+      "read src/main/java/com/picturejournal/shared/error/GlobalExceptionHandler.java",
+      "read src/main/java/com/picturejournal/shared/api/OpenApiConfig.java",
+      "read contracts/openapi/picture-journal.openapi.json",
+      "agent://14-G003ArchitectReview",
+      "agent://18-18-G003ArchitectSignoff"
+    ],
+    "blockers": []
+  },
+  "executorQa": {
+    "status": "passed",
+    "e2eStatus": "passed",
+    "redTeamStatus": "passed",
+    "evidence": "The full Spring Boot verification suite, OpenAPI artifact refresh path, auth API/controller tests, collaboration API/controller tests, auth service hardening tests, collaboration service concurrency/integrity tests, unsafe-token path tests, folder policy tests, and shared error-envelope tests all pass in the current repo state.",
+    "e2eCommands": [
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "redTeamCommands": [
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "artifactRefs": [
+      {
+        "id": "auth-controller-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.auth.api.AuthControllerTests.xml",
+        "description": "Auth API happy/error path report."
+      },
+      {
+        "id": "auth-service-report",
+        "kind": "algorithm-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.auth.application.AuthServiceTests.xml",
+        "description": "Password hashing, malformed hash rejection, session TTL, and duplicate signup serialization report."
+      },
+      {
+        "id": "auth-session-store-report",
+        "kind": "algorithm-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.auth.application.FileAuthSessionStoreTests.xml",
+        "description": "Unsafe bearer-token path rejection report."
+      },
+      {
+        "id": "collaboration-controller-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.collaboration.api.CollaborationControllerTests.xml",
+        "description": "Folder create/list/filter, invite flows, invalid folder type, and viewer denial report."
+      },
+      {
+        "id": "collaboration-service-report",
+        "kind": "algorithm-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.collaboration.application.CollaborationServiceTests.xml",
+        "description": "Invite single-use, inviter capability retention, orphaned membership, and folder-type requirement report."
+      },
+      {
+        "id": "collaboration-store-report",
+        "kind": "algorithm-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.collaboration.application.FileCollaborationStoreTests.xml",
+        "description": "Unsafe invite-token path rejection report."
+      },
+      {
+        "id": "folder-policy-report",
+        "kind": "package-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.folder.application.FolderCapabilityPolicyContractTests.xml",
+        "description": "FolderCapabilityPolicy contract report."
+      },
+      {
+        "id": "error-envelope-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.shared.error.GlobalExceptionHandlerTests.xml",
+        "description": "Shared error envelope report for internal, validation, and folder-write failures."
+      },
+      {
+        "id": "openapi-contract-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.OpenApiContractTests.xml",
+        "description": "OpenAPI parity plus security/error-response contract report."
+      },
+      {
+        "id": "openapi-refresh-report",
+        "kind": "api-test-report",
+        "path": "build/test-results/test/TEST-com.picturejournal.OpenApiContractArtifactTests.xml",
+        "description": "OpenAPI artifact generation/refresh report."
+      },
+      {
+        "id": "openapi-docs-artifact",
+        "kind": "api-artifact",
+        "path": "build/test-artifacts/g001-openapi-docs.json",
+        "description": "Generated OpenAPI artifact matching the checked-in contract."
+      }
+    ],
+    "contractCoverage": [
+      {
+        "id": "g003-auth-api",
+        "contractRef": "G003:auth",
+        "obligation": "Signup, login, and me endpoints authenticate users and return shared error codes for bad credentials and duplicate emails.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-auth-api"],
+        "adversarialCaseRefs": ["case-duplicate-email", "case-wrong-password", "case-expired-session", "case-malformed-password-hash"]
+      },
+      {
+        "id": "g003-folder-apis",
+        "contractRef": "G003:folders",
+        "obligation": "Authenticated users can create, list, filter, fetch, and update fixed-type folders through the server-side collaboration core.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-collaboration-api"],
+        "adversarialCaseRefs": ["case-invalid-folder-type", "case-viewer-write-denied"]
+      },
+      {
+        "id": "g003-invites-memberships",
+        "contractRef": "G003:invites-memberships",
+        "obligation": "Owners can create viewer/editor invite links, invite acceptance adds memberships, and invite escalation/replay is blocked.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-collaboration-api", "surface-collaboration-service"],
+        "adversarialCaseRefs": ["case-owner-role-invite-denied", "case-inviter-capability-revoked", "case-single-use-invite"]
+      },
+      {
+        "id": "g003-policy-boundary",
+        "contractRef": "G003:folder-capability-policy",
+        "obligation": "Folder-scoped collaboration writes pass FolderCapabilityPolicy and reject unauthorized writers.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-folder-policy", "surface-collaboration-api", "surface-collaboration-service"],
+        "adversarialCaseRefs": ["case-viewer-write-denied", "case-inviter-capability-revoked"]
+      },
+      {
+        "id": "g003-openapi-contract",
+        "contractRef": "G003:openapi-security-contract",
+        "obligation": "The checked-in OpenAPI contract matches runtime docs and documents bearer security plus shared 4xx responses for collaboration/auth endpoints.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-openapi-contract"],
+        "adversarialCaseRefs": ["case-openapi-security-parity"]
+      },
+      {
+        "id": "g003-file-store-hardening",
+        "contractRef": "G003:file-store-hardening",
+        "obligation": "Unsafe token paths and orphaned collaboration data fail safely rather than causing silent corruption or filesystem traversal.",
+        "status": "covered",
+        "surfaceEvidenceRefs": ["surface-auth-service", "surface-collaboration-service"],
+        "adversarialCaseRefs": ["case-unsafe-session-token", "case-unsafe-invite-token", "case-orphaned-membership"]
+      }
+    ],
+    "surfaceEvidence": [
+      {
+        "id": "surface-auth-api",
+        "contractRef": "G003:auth",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["auth-controller-report"]
+      },
+      {
+        "id": "surface-auth-service",
+        "contractRef": "G003:file-store-hardening",
+        "surface": "algorithm",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["auth-service-report", "auth-session-store-report"]
+      },
+      {
+        "id": "surface-collaboration-api",
+        "contractRef": "G003:folders",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-controller-report"]
+      },
+      {
+        "id": "surface-collaboration-service",
+        "contractRef": "G003:invites-memberships",
+        "surface": "algorithm",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-service-report", "collaboration-store-report"]
+      },
+      {
+        "id": "surface-folder-policy",
+        "contractRef": "G003:folder-capability-policy",
+        "surface": "package",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["folder-policy-report"]
+      },
+      {
+        "id": "surface-openapi-contract",
+        "contractRef": "G003:openapi-security-contract",
+        "surface": "api",
+        "invocation": "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report", "openapi-refresh-report", "openapi-docs-artifact"]
+      }
+    ],
+    "adversarialCases": [
+      {
+        "id": "case-duplicate-email",
+        "contractRef": "G003:auth",
+        "scenario": "Two signups attempt the same email.",
+        "expectedBehavior": "Only one account is created and the competing request gets CONFLICT.",
+        "verdict": "passed",
+        "artifactRefs": ["auth-service-report", "auth-controller-report"]
+      },
+      {
+        "id": "case-wrong-password",
+        "contractRef": "G003:auth",
+        "scenario": "A login uses the wrong password.",
+        "expectedBehavior": "The request returns UNAUTHORIZED through the shared error envelope.",
+        "verdict": "passed",
+        "artifactRefs": ["auth-controller-report"]
+      },
+      {
+        "id": "case-expired-session",
+        "contractRef": "G003:auth",
+        "scenario": "A session token is older than the configured TTL.",
+        "expectedBehavior": "The token is rejected as UNAUTHORIZED.",
+        "verdict": "passed",
+        "artifactRefs": ["auth-service-report"]
+      },
+      {
+        "id": "case-malformed-password-hash",
+        "contractRef": "G003:file-store-hardening",
+        "scenario": "A persisted user account contains a malformed password hash string.",
+        "expectedBehavior": "Login fails as UNAUTHORIZED rather than throwing a generic 500.",
+        "verdict": "passed",
+        "artifactRefs": ["auth-service-report"]
+      },
+      {
+        "id": "case-invalid-folder-type",
+        "contractRef": "G003:folders",
+        "scenario": "Folder create/list receives an invalid FolderType value from the framework binding layer.",
+        "expectedBehavior": "The request returns INVALID_ARGUMENT instead of a generic 500.",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-controller-report", "error-envelope-report"]
+      },
+      {
+        "id": "case-viewer-write-denied",
+        "contractRef": "G003:folder-capability-policy",
+        "scenario": "A viewer attempts to patch folder metadata.",
+        "expectedBehavior": "The write is denied with FOLDER_WRITE_NOT_ALLOWED.",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-controller-report", "folder-policy-report"]
+      },
+      {
+        "id": "case-owner-role-invite-denied",
+        "contractRef": "G003:invites-memberships",
+        "scenario": "An invite attempts to grant OWNER role.",
+        "expectedBehavior": "The request returns INVALID_ARGUMENT.",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-controller-report"]
+      },
+      {
+        "id": "case-inviter-capability-revoked",
+        "contractRef": "G003:invites-memberships",
+        "scenario": "An invite is accepted after the inviter no longer has folder write capability.",
+        "expectedBehavior": "The acceptance is denied through FolderCapabilityPolicy.",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-service-report"]
+      },
+      {
+        "id": "case-single-use-invite",
+        "contractRef": "G003:invites-memberships",
+        "scenario": "Two concurrent accept attempts race on the same invite token.",
+        "expectedBehavior": "Exactly one succeeds and the other fails with CONFLICT.",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-service-report"]
+      },
+      {
+        "id": "case-unsafe-session-token",
+        "contractRef": "G003:file-store-hardening",
+        "scenario": "A crafted bearer token includes path traversal characters.",
+        "expectedBehavior": "The session store rejects the path and returns no session.",
+        "verdict": "passed",
+        "artifactRefs": ["auth-session-store-report"]
+      },
+      {
+        "id": "case-unsafe-invite-token",
+        "contractRef": "G003:file-store-hardening",
+        "scenario": "A crafted invite token includes path traversal characters.",
+        "expectedBehavior": "The collaboration store rejects the path and returns no invite.",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-store-report"]
+      },
+      {
+        "id": "case-orphaned-membership",
+        "contractRef": "G003:file-store-hardening",
+        "scenario": "A membership references a missing folder file.",
+        "expectedBehavior": "The collaboration service fails loudly instead of silently dropping the membership.",
+        "verdict": "passed",
+        "artifactRefs": ["collaboration-service-report"]
+      },
+      {
+        "id": "case-openapi-security-parity",
+        "contractRef": "G003:openapi-security-contract",
+        "scenario": "Runtime /api-docs is compared against the checked-in contract for bearer security and 4xx response metadata.",
+        "expectedBehavior": "The checked-in contract matches the generated docs and includes bearer security plus shared 4xx response descriptions.",
+        "verdict": "passed",
+        "artifactRefs": ["openapi-contract-report", "openapi-refresh-report", "openapi-docs-artifact"]
+      }
+    ],
+    "blockers": []
+  },
+  "iteration": {
+    "status": "passed",
+    "evidence": "After resolving every successful architect and QA finding observed during G003 work, the full verification loop including contract refresh and all auth/collaboration tests was rerun cleanly against the current repository state.",
+    "fullRerun": true,
+    "rerunCommands": [
+      "./gradlew.bat generateOpenApiContract refreshOpenApiContract test --rerun-tasks"
+    ],
+    "blockers": []
+  }
+}

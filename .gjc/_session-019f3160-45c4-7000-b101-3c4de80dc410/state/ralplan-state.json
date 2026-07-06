@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "skill": "ralplan",
+  "current_phase": "final",
+  "active": true,
+  "handoff_from": "deep-interview",
+  "handoff_at": "2026-07-05T08:54:40.296Z",
+  "updated_at": "2026-07-05T09:34:29.157Z",
+  "receipt": {
+    "version": 1,
+    "skill": "ralplan",
+    "owner": "gjc-runtime",
+    "command": "gjc ralplan persist-run-id",
+    "state_path": "C:\\Users\\prome\\Desktop\\PROJECT\\PictureJournal\\.gjc\\state\\sessions\\019f3160-45c4-7000-b101-3c4de80dc410\\skill-active-state.json",
+    "storage_path": "C:\\Users\\prome\\Desktop\\PROJECT\\PictureJournal\\.gjc\\state\\sessions\\019f3160-45c4-7000-b101-3c4de80dc410\\ralplan-state.json",
+    "mutated_at": "2026-07-05T09:34:29.158Z",
+    "fresh_until": "2026-07-05T10:04:29.158Z",
+    "status": "fresh",
+    "mutation_id": "ralplan:2026-07-05T09:34:29.158Z",
+    "content_sha256": {
+      "algorithm": "sha256",
+      "value": "79b8958b37fc827d99166926f2aab96a095c99133e16fb641d74ea7454dd8ac3",
+      "covered_path": "C:\\Users\\prome\\Desktop\\PROJECT\\PictureJournal\\.gjc\\_session-019f3160-45c4-7000-b101-3c4de80dc410\\state\\ralplan-state.json",
+      "computed_at": "2026-07-05T09:34:29.158Z"
+    }
+  },
+  "session_id": "019f3160-45c4-7000-b101-3c4de80dc410",
+  "state_revision": 1,
+  "run_id": "019f3160-45c4-7000-b101-3c4de80dc410",
+  "planner_subagent_id": "0-PlannerPass1",
+  "planner_resumable": true,
+  "planner_fallback_reason": "resume_failed",
+  "planner_fallback_attempted_id": "0-PlannerPass1",
+  "planner_fallback_stage_n": 4
+}
