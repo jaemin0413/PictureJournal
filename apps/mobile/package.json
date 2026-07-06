@@ -1,0 +1,29 @@
+{
+  "name": "picture-journal-mobile-proof",
+  "version": "0.0.1",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "web:export": "npx expo export --platform web --output-dir dist-web",
+    "android:prebuild": "npx expo prebuild --platform android --no-install --clean",
+    "ios:prebuild": "npx expo prebuild --platform ios --no-install --clean",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~3.2.3",
+    "expo": "~51.0.39",
+    "expo-constants": "~16.0.2",
+    "expo-linking": "~6.3.1",
+    "expo-status-bar": "~1.12.1",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-native": "0.74.5",
+    "react-native-web": "~0.19.12"
+  },
+  "devDependencies": {
+    "@types/react": "~18.2.79",
+    "typescript": "~5.3.3"
+  }
+}
