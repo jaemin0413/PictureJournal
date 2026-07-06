@@ -40,6 +40,8 @@ jobs:
         run: node scripts/verify-android-share-intent.mjs
       - name: Build Android debug APK
         run: ./gradlew assembleDebug
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g
         working-directory: apps/mobile/android
       - name: Run Android emulator share smoke
         uses: reactivecircus/android-emulator-runner@v2
@@ -50,12 +52,7 @@ jobs:
           working-directory: apps/mobile
           script: |
             adb install android/app/build/outputs/apk/debug/app-debug.apk
-            adb shell am start -W \
-              -a android.intent.action.SEND \
-              -t text/plain \
-              --es android.intent.extra.TEXT 'place: Cafe Onion from GitHub Actions' \
-              --es android.intent.extra.TITLE 'Cafe Onion' \
-              com.picturejournal.proof
+            adb shell am start -W -a android.intent.action.SEND -t text/plain -p com.picturejournal.proof --es android.intent.extra.TEXT 'place: Cafe Onion from GitHub Actions' --es android.intent.extra.TITLE 'Cafe Onion'
             mkdir -p ../../artifacts/mobile
             adb shell dumpsys activity activities > ../../artifacts/mobile/android-activity-dump.txt
       - uses: actions/upload-artifact@v4
@@ -91,8 +88,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ../../artifacts/mobile
-          WORKSPACE=$(ls ios/*.xcworkspace | head -n 1)
-          SCHEME=$(xcodebuild -list -json -workspace "$WORKSPACE" | ruby -rjson -e 'puts JSON.parse(STDIN.read)["workspace"]["schemes"].first')
+          shopt -s nullglob
+          workspaces=(ios/*.xcworkspace)
+          if [ ${#workspaces[@]} -eq 0 ]; then
+            echo "No .xcworkspace found under apps/mobile/ios" >&2
+            exit 1
+          fi
+          WORKSPACE="${workspaces[0]}"
+          SCHEME="${WORKSPACE##*/}"
+          SCHEME="${SCHEME%.xcworkspace}"
+          export SCHEME
+          xcodebuild -list -json -workspace "$WORKSPACE" | ruby -rjson -e 'schemes = JSON.parse(STDIN.read).dig("workspace", "schemes") || []; target = ENV.fetch("SCHEME"); abort("Missing expected app scheme: #{target}") unless schemes.include?(target)'
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \

@@ -5,6 +5,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,6 +28,10 @@ class OpenApiContractArtifactTests {
     @Autowired
     private MockMvc mockMvc;
 
+    private final ObjectMapper objectMapper = new ObjectMapper()
+            .enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
+            .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+
     @Test
     void writesOpenApiArtifactForContractRefreshTask() throws Exception {
         MvcResult result = mockMvc.perform(get("/api-docs"))
@@ -37,7 +45,8 @@ class OpenApiContractArtifactTests {
         Files.createDirectories(artifactPath.getParent());
         Files.writeString(
                 artifactPath,
-                result.getResponse().getContentAsString(StandardCharsets.UTF_8),
+                objectMapper.writeValueAsString(
+                        objectMapper.readValue(result.getResponse().getContentAsString(StandardCharsets.UTF_8), Object.class)),
                 StandardCharsets.UTF_8);
     }
 }

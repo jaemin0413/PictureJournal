@@ -13,6 +13,9 @@
     },
     "android": {
       "package": "com.picturejournal.proof",
+      "splash": {
+        "backgroundColor": "#ffffff"
+      },
       "intentFilters": [
         {
           "action": "SEND",
