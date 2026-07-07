@@ -16,7 +16,7 @@ on:
 jobs:
   android-share-proof:
     name: Android share intent proof
-    runs-on: ubuntu-latest
+    runs-on: macos-13
     defaults:
       run:
         working-directory: apps/mobile
