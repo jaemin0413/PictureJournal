@@ -16,7 +16,7 @@ on:
 jobs:
   android-share-proof:
     name: Android share intent proof
-    runs-on: macos-13
+    runs-on: macos-14
     defaults:
       run:
         working-directory: apps/mobile
@@ -48,7 +48,7 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          arch: x86_64
+          arch: arm64-v8a
           profile: pixel_6
           disable-animations: false
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics
