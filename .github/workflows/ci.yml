@@ -16,5 +16,10 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+      - run: docker compose up -d postgres --wait
+      - run: docker compose ps
+      - run: chmod +x ./gradlew
       - run: ./gradlew generateOpenApiContract refreshOpenApiContract test --rerun-tasks
       - run: git diff --exit-code contracts/openapi/picture-journal.openapi.json
+      - if: always()
+        run: docker compose down -v

@@ -1,0 +1,122 @@
+name: mobile-share-proof
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/mobile-share-proof.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/mobile/**'
+      - '.github/workflows/mobile-share-proof.yml'
+
+jobs:
+  android-share-proof:
+    name: Android share intent proof
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run web:export
+      - run: npm run android:prebuild
+      - name: Verify Android share intent filters
+        run: node scripts/verify-android-share-intent.mjs
+      - name: Build Android debug APK
+        run: ./gradlew assembleDebug
+        env:
+          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g
+        working-directory: apps/mobile/android
+      - name: Run Android emulator share smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics
+          working-directory: apps/mobile
+          script: |
+            adb install android/app/build/outputs/apk/debug/app-debug.apk
+            adb shell am start -W -a android.intent.action.SEND -t text/plain -p com.picturejournal.proof --es android.intent.extra.TEXT 'place: Cafe Onion from GitHub Actions' --es android.intent.extra.TITLE 'Cafe Onion'
+            mkdir -p ../../artifacts/mobile
+            adb shell dumpsys activity activities > ../../artifacts/mobile/android-activity-dump.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-share-proof
+          path: |
+            apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
+            artifacts/mobile/android-activity-dump.txt
+            artifacts/mobile/android-share-intent-manifest-check.json
+            apps/mobile/dist-web
+
+  ios-simulator-proof:
+    name: iOS simulator build proof
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run ios:prebuild
+      - name: Install CocoaPods dependencies
+        run: pod install
+        working-directory: apps/mobile/ios
+      - name: Build iOS app for simulator
+        run: |
+          set -euo pipefail
+          mkdir -p ../../artifacts/mobile
+          shopt -s nullglob
+          workspaces=(ios/*.xcworkspace)
+          if [ ${#workspaces[@]} -eq 0 ]; then
+            echo "No .xcworkspace found under apps/mobile/ios" >&2
+            exit 1
+          fi
+          WORKSPACE="${workspaces[0]}"
+          SCHEME="${WORKSPACE##*/}"
+          SCHEME="${SCHEME%.xcworkspace}"
+          export SCHEME
+          xcodebuild -list -json -workspace "$WORKSPACE" | ruby -rjson -e 'schemes = JSON.parse(STDIN.read).dig("workspace", "schemes") || []; target = ENV.fetch("SCHEME"); abort("Missing expected app scheme: #{target}") unless schemes.include?(target)'
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee ../../artifacts/mobile/ios-simulator-build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-simulator-proof
+          path: artifacts/mobile/ios-simulator-build.log

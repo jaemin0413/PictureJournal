@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "goalId": "G002",
+  "status": "ci_proof_in_progress",
+  "createdAt": "2026-07-06",
+  "summary": "Adds an Expo/React Native mobile proof harness plus GitHub Actions workflows to move native-share proof as far as possible without an iPhone.",
+  "android": {
+    "proofLevel": "automated_ci_and_user_device_ready",
+    "workflow": ".github/workflows/mobile-share-proof.yml#android-share-proof",
+    "checks": [
+      "npm ci",
+      "TypeScript typecheck",
+      "Expo web export for browser-openable UI proof",
+      "Expo Android prebuild",
+      "AndroidManifest SEND text/plain intent-filter verification",
+      "Android debug APK build on CI with Android SDK",
+      "Android Emulator adb SEND intent smoke launch"
+    ],
+    "userCanAlsoTestWithOwnPhone": true
+  },
+  "ios": {
+    "proofLevel": "simulator_build_ci_without_real_iphone",
+    "workflow": ".github/workflows/mobile-share-proof.yml#ios-simulator-proof",
+    "checks": [
+      "npm ci",
+      "TypeScript typecheck",
+      "Expo iOS prebuild",
+      "CocoaPods install",
+      "xcodebuild simulator build with CODE_SIGNING_ALLOWED=NO"
+    ],
+    "knownLimit": "Real iPhone share-sheet plus Instagram end-to-end still requires an iPhone and signing/provisioning."
+  },
+  "web": {
+    "proofLevel": "ui_and_payload_shape",
+    "notes": "React Native UI can be exported/opened on web, but native share receiver behavior still requires Android Emulator/device or iOS simulator/device proof."
+  },
+  "nextEvidenceToCollect": [
+    "GitHub Actions android-share-proof artifact",
+    "GitHub Actions ios-simulator-proof artifact",
+    "Optional Android phone manual smoke result from the user's device"
+  ]
+}
