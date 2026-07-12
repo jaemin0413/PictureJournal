@@ -59,7 +59,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics
           working-directory: apps/mobile
           script: |
-            set -euo pipefail
+            set -eu
             PACKAGE=com.picturejournal.mobile
             adb install android/app/build/outputs/apk/debug/app-debug.apk
             mkdir -p ../../artifacts/mobile
