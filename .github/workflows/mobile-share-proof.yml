@@ -71,6 +71,7 @@ jobs:
             artifacts/mobile/android-share-logcat.txt
             artifacts/mobile/android-metro.log
             artifacts/mobile/android-secure-store-files.txt
+            artifacts/mobile/android-share-receipt.png
             artifacts/mobile/android-share-intent-manifest-check.json
             apps/mobile/dist-web
 
@@ -115,7 +116,6 @@ jobs:
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             -derivedDataPath ios/build \
-            CODE_SIGNING_ALLOWED=NO \
             build | tee ../../artifacts/mobile/ios-simulator-build.log
       - name: Run iOS simulator share handoff smoke
         run: |
@@ -135,12 +135,22 @@ jobs:
           APP_PATH="$(find ios/build/Build/Products/Debug-iphonesimulator -maxdepth 1 -type d -name '*.app' ! -name '*ShareExtension*' -print -quit)"
           test -n "$APP_PATH"
           xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
+          xcrun simctl launch "$SIMULATOR_UDID" com.picturejournal.mobile
           GROUP_CONTAINER="$(xcrun simctl get_app_container "$SIMULATOR_UDID" com.picturejournal.mobile group.com.picturejournal.mobile)"
           defaults write "$GROUP_CONTAINER/Library/Preferences/group.com.picturejournal.mobile" picturejournalShareKey -array 'place: Cafe Onion from GitHub Actions iOS'
+          xcrun simctl terminate "$SIMULATOR_UDID" com.picturejournal.mobile
           xcrun simctl openurl "$SIMULATOR_UDID" 'picturejournal://dataUrl=picturejournalShareKey#text'
-          sleep 10
+          share_received=0
+          for attempt in $(seq 1 60); do
+            if grep -q 'PICTUREJOURNAL_SHARE_RECEIVED' ../../artifacts/mobile/ios-metro.log; then
+              share_received=1
+              break
+            fi
+            kill -0 "$METRO_PID"
+            sleep 2
+          done
+          test "$share_received" -eq 1
           xcrun simctl io "$SIMULATOR_UDID" screenshot ../../artifacts/mobile/ios-share-receipt.png
-          grep -q 'PICTUREJOURNAL_SHARE_RECEIVED' ../../artifacts/mobile/ios-metro.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

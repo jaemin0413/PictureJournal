@@ -9,7 +9,8 @@ capture_artifacts() {
   mkdir -p "$ARTIFACTS_DIR"
   adb shell dumpsys activity activities > "$ARTIFACTS_DIR/android-activity-dump.txt" || true
   adb logcat -d > "$ARTIFACTS_DIR/android-share-logcat.txt" || true
-  adb shell run-as "$PACKAGE" sh -c 'find shared_prefs -maxdepth 1 -type f -print' > "$ARTIFACTS_DIR/android-secure-store-files.txt" || true
+  adb shell run-as "$PACKAGE" find shared_prefs -maxdepth 1 -type f -print > "$ARTIFACTS_DIR/android-secure-store-files.txt" || true
+  adb exec-out screencap -p > "$ARTIFACTS_DIR/android-share-receipt.png" || true
 }
 
 cleanup() {
@@ -44,7 +45,16 @@ adb reverse tcp:8081 tcp:8081
 adb logcat -c
 adb shell am force-stop "$PACKAGE"
 adb shell am start -W -a android.intent.action.SEND -t text/plain -p "$PACKAGE" --es android.intent.extra.TEXT 'place: Cafe Onion from GitHub Actions' --es android.intent.extra.TITLE 'Cafe Onion' | tee "$ARTIFACTS_DIR/android-share-start.txt"
-sleep 10
+share_received=0
+for attempt in $(seq 1 60); do
+  if grep -q 'PICTUREJOURNAL_SHARE_RECEIVED' "$ARTIFACTS_DIR/android-metro.log"; then
+    share_received=1
+    break
+  fi
+  kill -0 "$METRO_PID"
+  sleep 2
+done
+test "$share_received" -eq 1
 capture_artifacts
 
 grep -q "$PACKAGE" "$ARTIFACTS_DIR/android-activity-dump.txt"
