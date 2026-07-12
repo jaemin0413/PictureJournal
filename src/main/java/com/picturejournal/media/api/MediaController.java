@@ -5,6 +5,7 @@ import com.picturejournal.media.application.MediaService;
 import com.picturejournal.media.domain.MediaAsset;
 import com.picturejournal.shared.error.GlobalExceptionHandler;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.parameters.RequestBody;
@@ -13,6 +14,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -53,8 +55,9 @@ public class MediaController {
     public MediaResponse uploadDirect(
             HttpServletRequest request,
             @RequestParam("intendedFolderId") UUID intendedFolderId,
-            @RequestParam("file") MultipartFile file) {
-        return MediaResponse.from(mediaService.uploadDirect(resolveActorId(request), intendedFolderId, file));
+            @RequestParam(value = "checksumSha256", required = false) String checksumSha256,
+            @RequestParam("file") List<MultipartFile> files) {
+        return MediaResponse.from(mediaService.uploadDirect(resolveActorId(request), intendedFolderId, files, checksumSha256));
     }
 
     @GetMapping("/{mediaId}/binary")
@@ -133,7 +136,8 @@ public class MediaController {
     }
 
     private record DirectUploadRequest(
-            @Schema(type = "string", format = "binary") MultipartFile file,
-            @Schema(type = "string", format = "uuid") UUID intendedFolderId) {
+            @ArraySchema(minItems = 1, maxItems = 1, schema = @Schema(type = "string", format = "binary")) List<MultipartFile> file,
+            @Schema(type = "string", format = "uuid") UUID intendedFolderId,
+            @Schema(type = "string", pattern = "^[a-fA-F0-9]{64}$") String checksumSha256) {
     }
 }

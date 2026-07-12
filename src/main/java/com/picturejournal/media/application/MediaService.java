@@ -16,6 +16,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import javax.imageio.ImageIO;
@@ -26,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 public class MediaService {
     private static final Duration PENDING_TTL = Duration.ofHours(24);
+    private static final long MAX_UPLOAD_BYTES = 20L * 1024L * 1024L;
 
     private final MediaAssetStore mediaAssetStore;
     private final FileMediaAssetStore fileMediaAssetStore;
@@ -58,6 +60,18 @@ public class MediaService {
     }
 
     public MediaAsset uploadDirect(UUID actorId, UUID intendedFolderId, MultipartFile file) {
+        return uploadDirect(actorId, intendedFolderId, List.of(file), null);
+    }
+
+    public MediaAsset uploadDirect(
+            UUID actorId,
+            UUID intendedFolderId,
+            List<MultipartFile> files,
+            String declaredChecksumSha256) {
+        if (files == null || files.size() != 1) {
+            throw invalidArgument("Exactly one file part is required.");
+        }
+        MultipartFile file = files.getFirst();
         if (intendedFolderId == null) {
             throw invalidArgument("intendedFolderId is required.");
         }
@@ -76,11 +90,20 @@ public class MediaService {
         if (file == null || file.isEmpty()) {
             throw invalidArgument("file is required.");
         }
+        if (file.getSize() > MAX_UPLOAD_BYTES) {
+            throw invalidArgument("Uploaded image exceeds the 20 MiB limit.");
+        }
         byte[] bytes = readBytes(file);
         String mimeType = detectMimeType(bytes);
         String suppliedMimeType = normalizeMimeType(file.getContentType());
         if (!suppliedMimeType.isEmpty() && !mimeType.equals(suppliedMimeType)) {
             throw invalidArgument("Uploaded file content does not match its declared MIME type.");
+        }
+        String checksum = checksumSha256(bytes);
+        if (declaredChecksumSha256 != null
+                && !declaredChecksumSha256.isBlank()
+                && !checksum.equalsIgnoreCase(declaredChecksumSha256.trim())) {
+            throw invalidArgument("Uploaded file checksum does not match the declared checksum.");
         }
         Dimensions dimensions = readDimensions(bytes);
         ExifMetadataExtractor.ExtractedExif exif = exifMetadataExtractor.extract(bytes);
@@ -104,7 +127,7 @@ public class MediaService {
                 exif.cameraModel(),
                 exif.gpsLatitude(),
                 exif.gpsLongitude(),
-                checksumSha256(bytes),
+                checksum,
                 MediaAsset.Status.PENDING,
                 null,
                 null,

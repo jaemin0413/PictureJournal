@@ -219,6 +219,52 @@ class DiaryControllerTests {
     }
 
     @Test
+    void directUploadRejectsMultipleFiles() throws Exception {
+        String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
+        MockMultipartFile first = new MockMultipartFile("file", "first.png", "image/png", TINY_PNG);
+        MockMultipartFile second = new MockMultipartFile("file", "second.png", "image/png", TINY_PNG);
+
+        mockMvc.perform(multipart("/api/v1/media/direct-upload")
+                        .file(first)
+                        .file(second)
+                        .param("intendedFolderId", folderId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+    }
+
+    @Test
+    void directUploadRejectsOversizedImages() throws Exception {
+        String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
+        byte[] oversized = new byte[20 * 1024 * 1024 + 1];
+        MockMultipartFile file = new MockMultipartFile("file", "oversized.png", "image/png", oversized);
+
+        mockMvc.perform(multipart("/api/v1/media/direct-upload")
+                        .file(file)
+                        .param("intendedFolderId", folderId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+    }
+
+    @Test
+    void directUploadRejectsDeclaredChecksumMismatch() throws Exception {
+        String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
+        MockMultipartFile file = new MockMultipartFile("file", "photo.png", "image/png", TINY_PNG);
+
+        mockMvc.perform(multipart("/api/v1/media/direct-upload")
+                        .file(file)
+                        .param("intendedFolderId", folderId)
+                        .param("checksumSha256", "0".repeat(64))
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+    }
+
+    @Test
     void diaryCommitRejectsUnauthorizedAndAlreadyCommittedMediaWithoutPlaceholders() throws Exception {
         String ownerToken = signupAndLogin("owner@example.com", "Owner");
         String otherToken = signupAndLogin("other@example.com", "Other");

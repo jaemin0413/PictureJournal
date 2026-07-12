@@ -59,10 +59,21 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics
           working-directory: apps/mobile
           script: |
+            set -euo pipefail
+            PACKAGE=com.picturejournal.mobile
             adb install android/app/build/outputs/apk/debug/app-debug.apk
-            adb shell am start -W -a android.intent.action.SEND -t text/plain -p com.picturejournal.proof --es android.intent.extra.TEXT 'place: Cafe Onion from GitHub Actions' --es android.intent.extra.TITLE 'Cafe Onion'
             mkdir -p ../../artifacts/mobile
+            adb shell cmd package resolve-activity --brief -a android.intent.action.SEND -t text/plain -p "$PACKAGE" | tee ../../artifacts/mobile/android-resolved-share-activity.txt
+            grep -q "$PACKAGE" ../../artifacts/mobile/android-resolved-share-activity.txt
+            adb logcat -c
+            adb shell am force-stop "$PACKAGE"
+            adb shell am start -W -a android.intent.action.SEND -t text/plain -p "$PACKAGE" --es android.intent.extra.TEXT 'place: Cafe Onion from GitHub Actions' --es android.intent.extra.TITLE 'Cafe Onion' | tee ../../artifacts/mobile/android-share-start.txt
+            sleep 5
             adb shell dumpsys activity activities > ../../artifacts/mobile/android-activity-dump.txt
+            adb logcat -d > ../../artifacts/mobile/android-share-logcat.txt
+            grep -q "$PACKAGE" ../../artifacts/mobile/android-activity-dump.txt
+            adb shell run-as "$PACKAGE" sh -c 'find shared_prefs -type f -maxdepth 1 -print' > ../../artifacts/mobile/android-secure-store-files.txt
+            grep -q 'SecureStore' ../../artifacts/mobile/android-secure-store-files.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -70,6 +81,10 @@ jobs:
           path: |
             apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
             artifacts/mobile/android-activity-dump.txt
+            artifacts/mobile/android-resolved-share-activity.txt
+            artifacts/mobile/android-share-start.txt
+            artifacts/mobile/android-share-logcat.txt
+            artifacts/mobile/android-secure-store-files.txt
             artifacts/mobile/android-share-intent-manifest-check.json
             apps/mobile/dist-web
 
