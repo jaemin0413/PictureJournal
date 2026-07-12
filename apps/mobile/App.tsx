@@ -333,6 +333,7 @@ export default function App() {
         receivedVia: Platform.OS === 'web' ? 'web_deeplink' : 'native_share',
       });
       await persistPendingShares([...pendingSharesRef.current, item]);
+      console.info('PICTUREJOURNAL_SHARE_RECEIVED', item.clientIntakeId);
       setStatus('Share captured locally. Trusted normal share auto-save will run after auth and folder selection.');
       setScreen('placesList');
     };
@@ -355,6 +356,7 @@ export default function App() {
       });
       await persistPendingShares([...pendingSharesRef.current, item]);
       resetShareIntent(true);
+      console.info('PICTUREJOURNAL_SHARE_RECEIVED', item.clientIntakeId);
       setStatus('Native share captured locally for automatic save after auth and folder binding.');
       setScreen('placesList');
     };
