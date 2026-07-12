@@ -1,18 +1,22 @@
 {
   "expo": {
-    "name": "Picture Journal Proof",
-    "slug": "picture-journal-proof",
+    "name": "Picture Journal",
+    "slug": "picture-journal-mobile",
     "scheme": "picturejournal",
     "version": "0.0.1",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "assetBundlePatterns": ["**/*"],
     "ios": {
-      "bundleIdentifier": "com.picturejournal.proof",
-      "supportsTablet": true
+      "bundleIdentifier": "com.picturejournal.mobile",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "PictureJournal needs one selected photo for Photo Diary entries.",
+        "NSLocationWhenInUseUsageDescription": "PictureJournal uses location only when you choose a coordinate fallback for a diary entry."
+      }
     },
     "android": {
-      "package": "com.picturejournal.proof",
+      "package": "com.picturejournal.mobile",
       "splash": {
         "backgroundColor": "#ffffff"
       },
@@ -33,8 +37,35 @@
       "bundler": "metro",
       "output": "single"
     },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "PictureJournal needs one selected photo for Photo Diary entries."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "PictureJournal uses location only when you choose a coordinate fallback for a diary entry."
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsText": true,
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsWebPageWithMaxCount": 1
+          },
+          "androidIntentFilters": ["text/plain", "text/*"]
+        }
+      ]
+    ],
     "extra": {
-      "apiBaseUrl": "http://localhost:8080"
+      "apiBaseUrl": "http://localhost:8080",
+      "apiBaseUrlAndroidEmulator": "http://10.0.2.2:8080"
     }
   }
 }

@@ -11,6 +11,9 @@ import com.picturejournal.place.domain.ShareIntakeStatus;
 import com.picturejournal.place.domain.VisitStatus;
 import com.picturejournal.shared.error.DomainException;
 import com.picturejournal.shared.error.ErrorCode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -27,6 +30,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class PlaceService {
 
+    private static final int DEDUPE_WINDOW_SECONDS = 300;
     private static final Pattern URL_PATTERN = Pattern.compile("https?://\\S+");
 
     private final PlaceStore placeStore;
@@ -39,32 +43,41 @@ public class PlaceService {
         this(placeStore, collaborationStore, folderCapabilityPolicy, Clock.systemUTC());
     }
 
-    PlaceService(PlaceStore placeStore, CollaborationStore collaborationStore, FolderCapabilityPolicy folderCapabilityPolicy, Clock clock) {
+    public PlaceService(PlaceStore placeStore, CollaborationStore collaborationStore, FolderCapabilityPolicy folderCapabilityPolicy, Clock clock) {
         this.placeStore = placeStore;
         this.collaborationStore = collaborationStore;
         this.folderCapabilityPolicy = folderCapabilityPolicy;
         this.clock = clock;
     }
 
-    public ShareIntakeView createShareIntake(UUID actorId, CreateShareIntakeCommand command) {
-        UUID folderId = command.folderId();
-        if (folderId != null) {
-            requireReelsPlaceMember(actorId, folderId);
-        }
+    public synchronized ShareIntakeView createShareIntake(UUID actorId, CreateShareIntakeCommand command) {
+        UUID folderId = requireUuid(command.folderId(), "folderId");
+        requireReelsPlaceMember(actorId, folderId);
+        folderCapabilityPolicy.assertCanWriteToFolder(actorId, folderId);
+        String clientIntakeId = normalizeRequired(command.clientIntakeId(), "clientIntakeId");
         String rawUrl = normalizeOptional(command.rawUrl());
         String rawTitle = normalizeOptional(command.rawTitle());
         String rawText = normalizeOptional(command.rawText());
         if (rawUrl == null && rawTitle == null && rawText == null) {
             throw invalidArgument("At least one raw share payload field is required.");
         }
+        String normalizedUrl = normalizeUrl(rawUrl, rawText);
+        String clientFingerprint = normalizeOptional(command.contentFingerprint());
+        String contentFingerprint = clientFingerprint == null
+                ? fingerprint(rawUrl, rawTitle, rawText, normalizedUrl)
+                : hashCanonical("client\n" + clientFingerprint);
+        ShareIntakeItem existing = findExistingIntake(actorId, folderId, clientIntakeId, contentFingerprint, Instant.now(clock));
+        if (existing != null) {
+            return viewFor(reconcileExistingTerminal(existing));
+        }
         Instant now = Instant.now(clock);
         UUID intakeId = UUID.randomUUID();
         List<PlaceCandidate> candidates = extractCandidates(intakeId, rawTitle, rawText);
-        ShareIntakeStatus status = candidates.isEmpty()
-                ? ShareIntakeStatus.NEEDS_MANUAL_FIX
-                : (candidates.size() == 1 ? ShareIntakeStatus.NEEDS_CONFIRMATION : ShareIntakeStatus.NEEDS_SELECTION);
+        ShareIntakeStatus status = ShareIntakeStatus.NEEDS_MANUAL_FIX;
+        String failureReason = candidates.size() == 1 ? null : unresolvedReason(candidates);
         ShareIntakeItem intake = ShareIntakeItem.create(
                 intakeId,
+                clientIntakeId,
                 folderId,
                 actorId,
                 normalizeRequired(command.sourceApp(), "sourceApp"),
@@ -73,13 +86,30 @@ public class PlaceService {
                 rawUrl,
                 rawTitle,
                 rawText,
-                normalizeUrl(rawUrl, rawText),
+                normalizedUrl,
+                contentFingerprint,
                 status,
-                candidates.isEmpty() ? "No place candidate could be extracted." : null,
+                failureReason,
                 now);
         ShareIntakeItem saved = placeStore.saveIntake(intake);
         candidates.forEach(placeStore::saveCandidate);
-        return ShareIntakeView.from(saved, candidates, null);
+        if (candidates.size() != 1) {
+            return ShareIntakeView.from(saved, candidates, null);
+        }
+        try {
+            SavedPlace place = autoSavePlace(saved, candidates.getFirst(), now);
+            PlaceStore.ResolutionWrite resolution = placeStore.saveResolution(saved.resolve(place.placeId(), now), place);
+            return ShareIntakeView.from(resolution.intake(), candidates, resolution.place());
+        } catch (DomainException exception) {
+            ShareIntakeItem unresolved = placeStore.saveIntake(saved.updateUnresolved(
+                    rawUrl,
+                    rawTitle,
+                    rawText,
+                    normalizedUrl,
+                    "Auto-save failed: " + exception.getMessage(),
+                    Instant.now(clock)));
+            return ShareIntakeView.from(unresolved, candidates, null);
+        }
     }
 
     public ShareIntakeView getShareIntake(UUID actorId, UUID intakeId) {
@@ -92,20 +122,42 @@ public class PlaceService {
         SavedPlace resolvedPlace = intake.resolvedPlaceId() == null ? null : requirePlace(intake.resolvedPlaceId());
         return ShareIntakeView.from(intake, placeStore.listCandidatesByIntakeId(intakeId), resolvedPlace);
     }
+    public List<ShareIntakeView> listUnresolvedShareIntakes(UUID actorId, UUID folderId) {
+        requireReelsPlaceMember(actorId, folderId);
+        return placeStore.listIntakesByFolderId(folderId).stream()
+                .filter(intake -> intake.status() != ShareIntakeStatus.RESOLVED)
+                .map(this::viewFor)
+                .toList();
+    }
 
-    public synchronized ShareIntakeView saveDraft(UUID actorId, UUID intakeId) {
+    public synchronized ShareIntakeView updateUnresolvedShareIntake(UUID actorId, UUID intakeId, CreateShareIntakeCommand command) {
         ShareIntakeItem intake = requireIntakeForWrite(actorId, intakeId);
         if (intake.status() == ShareIntakeStatus.RESOLVED) {
             throw conflict("Share intake " + intakeId + " is already resolved.");
         }
-        ShareIntakeItem saved = placeStore.saveIntake(intake.saveDraft(Instant.now(clock)));
-        return ShareIntakeView.from(saved, placeStore.listCandidatesByIntakeId(intakeId), null);
+        String rawUrl = normalizeOptional(command.rawUrl());
+        String rawTitle = normalizeOptional(command.rawTitle());
+        String rawText = normalizeOptional(command.rawText());
+        if (rawUrl == null && rawTitle == null && rawText == null) {
+            throw invalidArgument("At least one raw share payload field is required.");
+        }
+        Instant now = Instant.now(clock);
+        ShareIntakeItem updated = placeStore.saveIntake(intake.updateUnresolved(
+                rawUrl,
+                rawTitle,
+                rawText,
+                normalizeUrl(rawUrl, rawText),
+                "Waiting for repair.",
+                now));
+        return ShareIntakeView.from(updated, placeStore.listCandidatesByIntakeId(intakeId), null);
     }
+
 
     public synchronized ResolveShareIntakeResult resolveShareIntake(UUID actorId, UUID intakeId, ResolveShareIntakeCommand command) {
         ShareIntakeItem intake = requireIntakeForWrite(actorId, intakeId);
         if (intake.status() == ShareIntakeStatus.RESOLVED) {
-            throw conflict("Share intake " + intakeId + " is already resolved.");
+            SavedPlace savedPlace = requirePlace(intake.resolvedPlaceId());
+            return new ResolveShareIntakeResult(viewFor(intake), savedPlace);
         }
         UUID folderId = command.folderId() == null ? intake.folderId() : command.folderId();
         requireReelsPlaceMember(actorId, requireUuid(folderId, "folderId"));
@@ -131,9 +183,10 @@ public class PlaceService {
                 now,
                 now,
                 now);
-        SavedPlace savedPlace = placeStore.savePlace(place);
-        ShareIntakeItem resolvedIntake = placeStore.saveIntake(intake.resolve(savedPlace.placeId(), now));
-        return new ResolveShareIntakeResult(ShareIntakeView.from(resolvedIntake, candidates, savedPlace), savedPlace);
+        PlaceStore.ResolutionWrite resolution = placeStore.saveResolution(intake.resolve(place.placeId(), now), place);
+        return new ResolveShareIntakeResult(
+                ShareIntakeView.from(resolution.intake(), candidates, resolution.place()),
+                resolution.place());
     }
 
     public List<SavedPlace> listSavedPlaces(UUID actorId, UUID folderId, SavedPlaceFilter filter) {
@@ -207,6 +260,68 @@ public class PlaceService {
                         "Actor " + actorId + " is not a member of folder " + folderId + "."));
         return folder;
     }
+    private ShareIntakeItem findExistingIntake(UUID actorId, UUID folderId, String clientIntakeId, String contentFingerprint, Instant now) {
+        Instant dedupeCutoff = now.minusSeconds(DEDUPE_WINDOW_SECONDS);
+        return placeStore.listIntakesByFolderId(folderId).stream()
+                .filter(intake -> actorId.equals(intake.receivedByUserId()))
+                .filter(intake -> clientIntakeId.equals(intake.clientIntakeId())
+                        || (contentFingerprint != null
+                        && contentFingerprint.equals(intake.contentFingerprint())
+                        && !intake.receivedAt().isBefore(dedupeCutoff)))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private ShareIntakeView viewFor(ShareIntakeItem intake) {
+        SavedPlace resolvedPlace = intake.resolvedPlaceId() == null ? null : requirePlace(intake.resolvedPlaceId());
+        return ShareIntakeView.from(intake, placeStore.listCandidatesByIntakeId(intake.intakeId()), resolvedPlace);
+    }
+
+    private SavedPlace autoSavePlace(ShareIntakeItem intake, PlaceCandidate candidate, Instant now) {
+        SavedPlace place = new SavedPlace(
+                UUID.randomUUID(),
+                intake.folderId(),
+                intake.receivedByUserId(),
+                intake.intakeId(),
+                candidate.name(),
+                null,
+                candidate.address(),
+                null,
+                candidate.latitude(),
+                candidate.longitude(),
+                null,
+                null,
+                List.of(),
+                VisitStatus.WANT_TO_GO,
+                now,
+                now,
+                now);
+        return place;
+    }
+
+    private String unresolvedReason(List<PlaceCandidate> candidates) {
+        if (candidates.isEmpty()) {
+            return "No trusted place candidate could be extracted.";
+        }
+        if (candidates.size() > 1) {
+            return "Multiple possible place candidates require repair.";
+        }
+        return null;
+    }
+    private ShareIntakeItem reconcileExistingTerminal(ShareIntakeItem intake) {
+        if (intake.status() == ShareIntakeStatus.RESOLVED || intake.folderId() == null) {
+            return intake;
+        }
+        SavedPlace savedPlace = placeStore.listPlacesByFolderId(intake.folderId()).stream()
+                .filter(place -> intake.intakeId().equals(place.shareIntakeId()))
+                .findFirst()
+                .orElse(null);
+        if (savedPlace == null) {
+            return intake;
+        }
+        return placeStore.saveIntake(intake.resolve(savedPlace.placeId(), Instant.now(clock)));
+    }
+
 
     private List<PlaceCandidate> extractCandidates(UUID intakeId, String rawTitle, String rawText) {
         List<String> names = new ArrayList<>();
@@ -275,6 +390,27 @@ public class PlaceService {
         String candidate = rawUrl == null ? firstUrl(rawText) : rawUrl;
         return candidate == null ? null : candidate.trim();
     }
+    private String fingerprint(String rawUrl, String rawTitle, String rawText, String normalizedUrl) {
+        String canonical = String.join("\n",
+                normalizedUrl == null ? "" : normalizedUrl,
+                rawTitle == null ? "" : rawTitle.toLowerCase(Locale.ROOT),
+                rawText == null ? "" : rawText.toLowerCase(Locale.ROOT));
+        return hashCanonical(canonical);
+    }
+
+    private String hashCanonical(String canonical) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder(digest.length * 2);
+            for (byte value : digest) {
+                builder.append(String.format("%02x", value));
+            }
+            return builder.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable.", exception);
+        }
+    }
+
 
     private String firstUrl(String rawText) {
         if (rawText == null) {
@@ -351,12 +487,14 @@ public class PlaceService {
 
     public record CreateShareIntakeCommand(
             UUID folderId,
+            String clientIntakeId,
             String rawUrl,
             String rawTitle,
             String rawText,
             String sourceApp,
             String platform,
-            String receivedVia) {
+            String receivedVia,
+            String contentFingerprint) {
     }
 
     public record ResolveShareIntakeCommand(

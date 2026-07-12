@@ -1,6 +1,5 @@
 package com.picturejournal.place.api;
 
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -21,6 +20,9 @@ import com.picturejournal.place.application.FilePlaceStore;
 import com.picturejournal.place.application.PlaceService;
 import com.picturejournal.shared.error.GlobalExceptionHandler;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.Executors;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -59,266 +61,227 @@ class PlaceControllerTests {
     }
 
     @Test
-    void singleCandidateCanBeConfirmedIntoSavedPlaceCrudFlow() throws Exception {
-        String ownerToken = signupAndLogin("owner@example.com", "Owner");
-        String folderId = createFolder(ownerToken, "REELS_PLACE");
-
-        MvcResult intakeResult = mockMvc.perform(post("/api/v1/share-intake")
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "folderId": "%s",
-                                  "rawUrl": "https://instagram.com/reel/abc",
-                                  "rawTitle": "Cafe Onion",
-                                  "sourceApp": "instagram",
-                                  "platform": "ios",
-                                  "receivedVia": "native_share"
-                                }
-                                """.formatted(folderId)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.status").value("NEEDS_CONFIRMATION"))
-                .andExpect(jsonPath("$.candidates[0].name").value("Cafe Onion"))
-                .andReturn();
-        String intakeId = objectMapper.readTree(intakeResult.getResponse().getContentAsString()).get("intakeId").asText();
-
-        MvcResult resolveResult = mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "category": "cafe",
-                                  "regionText": "Seoul",
-                                  "summary": "From a reel",
-                                  "keywords": ["coffee", "Coffee"],
-                                  "visitStatus": "WANT_TO_GO"
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.intake.status").value("RESOLVED"))
-                .andExpect(jsonPath("$.savedPlace.name").value("Cafe Onion"))
-                .andExpect(jsonPath("$.savedPlace.keywords.length()").value(1))
-                .andReturn();
-        String placeId = objectMapper.readTree(resolveResult.getResponse().getContentAsString()).get("savedPlace").get("placeId").asText();
-
-        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
-                        .header("Authorization", bearer(ownerToken))
-                        .param("category", "cafe")
-                        .param("status", "WANT_TO_GO")
-                        .param("keyword", "coffee")
-                        .param("region", "seo"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].placeId").value(placeId));
-
-        mockMvc.perform(patch("/api/v1/saved-places/{placeId}", placeId)
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "name": "Cafe Onion Anguk",
-                                  "visitStatus": "VISITED",
-                                  "latitude": 37.58,
-                                  "longitude": 126.98
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.name").value("Cafe Onion Anguk"))
-                .andExpect(jsonPath("$.visitStatus").value("VISITED"));
-
-        mockMvc.perform(get("/api/v1/saved-places/{placeId}", placeId)
-                        .header("Authorization", bearer(ownerToken)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.latitude").value(37.58));
-
-        mockMvc.perform(delete("/api/v1/saved-places/{placeId}", placeId)
-                        .header("Authorization", bearer(ownerToken)))
-                .andExpect(status().isNoContent());
-
-        mockMvc.perform(get("/api/v1/saved-places/{placeId}", placeId)
-                        .header("Authorization", bearer(ownerToken)))
-                .andExpect(status().isNotFound());
-    }
-
-    @Test
-    void multipleCandidatesRequireSelectionAndResolutionIsSingleUse() throws Exception {
-        String ownerToken = signupAndLogin("owner@example.com", "Owner");
-        String folderId = createFolder(ownerToken, "REELS_PLACE");
-
-        MvcResult intakeResult = mockMvc.perform(post("/api/v1/share-intake")
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "folderId": "%s",
-                                  "rawText": "place: Alpha Bistro; place: Beta Bar",
-                                  "sourceApp": "instagram",
-                                  "platform": "android",
-                                  "receivedVia": "native_share"
-                                }
-                                """.formatted(folderId)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.status").value("NEEDS_SELECTION"))
-                .andExpect(jsonPath("$.candidates.length()").value(2))
-                .andReturn();
-        JsonNode intakeJson = objectMapper.readTree(intakeResult.getResponse().getContentAsString());
-        String intakeId = intakeJson.get("intakeId").asText();
-        String candidateId = intakeJson.get("candidates").get(1).get("candidateId").asText();
-
-        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
-
-        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"candidateId\":\"" + candidateId + "\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.savedPlace.name").value("Beta Bar"));
-
-        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"candidateId\":\"" + candidateId + "\"}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("CONFLICT"));
-    }
-
-    @Test
-    void zeroCandidateIntakeCanBeDraftedAndManuallyFixed() throws Exception {
-        String ownerToken = signupAndLogin("owner@example.com", "Owner");
-        String folderId = createFolder(ownerToken, "REELS_PLACE");
-
-        MvcResult intakeResult = mockMvc.perform(post("/api/v1/share-intake")
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "folderId": "%s",
-                                  "rawUrl": "https://instagram.com/reel/no-place",
-                                  "sourceApp": "instagram",
-                                  "platform": "ios",
-                                  "receivedVia": "native_share"
-                                }
-                                """.formatted(folderId)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.status").value("NEEDS_MANUAL_FIX"))
-                .andExpect(jsonPath("$.candidates.length()").value(0))
-                .andReturn();
-        String intakeId = objectMapper.readTree(intakeResult.getResponse().getContentAsString()).get("intakeId").asText();
-
-        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/save-draft", intakeId)
-                        .header("Authorization", bearer(ownerToken)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("DRAFT"));
-
-        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "manualName": "Manual Place",
-                                  "address": "123 Road",
-                                  "latitude": 35.1,
-                                  "longitude": 129.1
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.savedPlace.name").value("Manual Place"));
-    }
-
-    @Test
-    void savedPlacesStayOutOfPhotoDiaryFolders() throws Exception {
-        String ownerToken = signupAndLogin("owner@example.com", "Owner");
-        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
+    void trustedSingleCandidateAutoSavesWithoutConfirmation() throws Exception {
+        String token = signupAndLogin("owner@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
 
         mockMvc.perform(post("/api/v1/share-intake")
-                        .header("Authorization", bearer(ownerToken))
+                        .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "folderId": "%s",
-                                  "rawTitle": "Cafe",
-                                  "sourceApp": "instagram",
-                                  "platform": "ios",
-                                  "receivedVia": "native_share"
-                                }
-                                """.formatted(folderId)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+                        .content(shareJson(folderId, "client-happy", "Cafe Onion")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.clientIntakeId").value("client-happy"))
+                .andExpect(jsonPath("$.status").value("RESOLVED"))
+                .andExpect(jsonPath("$.resolvedPlace.name").value("Cafe Onion"))
+                .andExpect(jsonPath("$.resolvedPlaceId").isNotEmpty())
+                .andExpect(jsonPath("$.candidates.length()").value(1));
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].name").value("Cafe Onion"));
     }
 
     @Test
-    void viewerCanReadButCannotResolveOrEditSavedPlaces() throws Exception {
-        String ownerToken = signupAndLogin("owner@example.com", "Owner");
-        String viewerToken = signupAndLogin("viewer@example.com", "Viewer");
-        String folderId = createFolder(ownerToken, "REELS_PLACE");
-        acceptInvite(folderId, ownerToken, viewerToken);
-        String intakeId = createSingleCandidateIntake(ownerToken, folderId, "Viewer Cafe");
-        String placeId = resolveSingleCandidate(ownerToken, intakeId);
+    void uncertainIntakeBecomesUnresolved() throws Exception {
+        String token = signupAndLogin("uncertain@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
 
-        mockMvc.perform(get("/api/v1/saved-places/{placeId}", placeId)
-                        .header("Authorization", bearer(viewerToken)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.name").value("Viewer Cafe"));
-
-        String viewerIntakeId = createSingleCandidateIntake(viewerToken, folderId, "Blocked Cafe");
-        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", viewerIntakeId)
-                        .header("Authorization", bearer(viewerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("FOLDER_WRITE_NOT_ALLOWED"));
-
-        mockMvc.perform(patch("/api/v1/saved-places/{placeId}", placeId)
-                        .header("Authorization", bearer(viewerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Blocked\"}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.code").value("FOLDER_WRITE_NOT_ALLOWED"));
-    }
-
-    private String createSingleCandidateIntake(String token, String folderId, String title) throws Exception {
         MvcResult intakeResult = mockMvc.perform(post("/api/v1/share-intake")
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "folderId": "%s",
-                                  "rawTitle": "%s",
-                                  "sourceApp": "instagram",
-                                  "platform": "ios",
-                                  "receivedVia": "native_share"
-                                }
-                                """.formatted(folderId, title)))
+                        .content(shareJson(folderId, "client-uncertain", "place: Alpha; place: Beta")))
                 .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.status").value("NEEDS_MANUAL_FIX"))
+                .andExpect(jsonPath("$.failureReason").isNotEmpty())
+                .andExpect(jsonPath("$.resolvedPlaceId").isEmpty())
                 .andReturn();
-        return objectMapper.readTree(intakeResult.getResponse().getContentAsString()).get("intakeId").asText();
+        String intakeId = objectMapper.readTree(intakeResult.getResponse().getContentAsString()).get("intakeId").asText();
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/share-intake/unresolved", folderId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].intakeId").value(intakeId));
     }
 
-    private String resolveSingleCandidate(String token, String intakeId) throws Exception {
-        MvcResult resolveResult = mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
+    @Test
+    void duplicateRetryReturnsExistingTerminalResult() throws Exception {
+        String token = signupAndLogin("retry@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+        String payload = shareJson(folderId, "client-retry", "Retry Cafe");
+
+        JsonNode first = postShare(token, payload);
+        JsonNode second = postShare(token, payload);
+
+        org.assertj.core.api.Assertions.assertThat(second.get("intakeId").asText()).isEqualTo(first.get("intakeId").asText());
+        org.assertj.core.api.Assertions.assertThat(second.get("resolvedPlace").get("placeId").asText())
+                .isEqualTo(first.get("resolvedPlace").get("placeId").asText());
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1));
+    }
+
+    @Test
+    void clientIntakeIdIsScopedByUserAndFolder() throws Exception {
+        String ownerToken = signupAndLogin("scope-owner@example.com", "Owner");
+        String otherToken = signupAndLogin("scope-other@example.com", "Other");
+        String folderA = createFolder(ownerToken, "REELS_PLACE");
+        String folderB = createFolder(ownerToken, "REELS_PLACE");
+        String otherFolder = createFolder(otherToken, "REELS_PLACE");
+
+        postShare(ownerToken, shareJson(folderA, "same-client-id", "A Cafe"));
+        postShare(ownerToken, shareJson(folderB, "same-client-id", "B Cafe"));
+        postShare(otherToken, shareJson(otherFolder, "same-client-id", "Other Cafe"));
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderA)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].name").value("A Cafe"));
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderB)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].name").value("B Cafe"));
+    }
+
+    @Test
+    void sameFingerprintInSameFolderDedupeAcrossDifferentClientIds() throws Exception {
+        String token = signupAndLogin("fingerprint@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+
+        JsonNode first = postShare(token, shareJson(folderId, "client-fingerprint-a", "Fingerprint Cafe", "fp-same"));
+        JsonNode second = postShare(token, shareJson(folderId, "client-fingerprint-b", "Renamed Fingerprint Cafe", "fp-same"));
+
+        org.assertj.core.api.Assertions.assertThat(second.get("intakeId").asText()).isEqualTo(first.get("intakeId").asText());
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1));
+    }
+
+    @Test
+    void sameFingerprintIsNotDedupedAcrossFoldersOrUsers() throws Exception {
+        String ownerToken = signupAndLogin("fp-owner@example.com", "Owner");
+        String otherToken = signupAndLogin("fp-other@example.com", "Other");
+        String folderA = createFolder(ownerToken, "REELS_PLACE");
+        String folderB = createFolder(ownerToken, "REELS_PLACE");
+        String otherFolder = createFolder(otherToken, "REELS_PLACE");
+
+        JsonNode first = postShare(ownerToken, shareJson(folderA, "fp-a", "A Cafe", "fp-cross"));
+        JsonNode second = postShare(ownerToken, shareJson(folderB, "fp-b", "B Cafe", "fp-cross"));
+        JsonNode third = postShare(otherToken, shareJson(otherFolder, "fp-c", "C Cafe", "fp-cross"));
+
+        org.assertj.core.api.Assertions.assertThat(List.of(second.get("intakeId").asText(), third.get("intakeId").asText()))
+                .doesNotContain(first.get("intakeId").asText());
+    }
+
+    @Test
+    void concurrentSameIntakeRequestsReturnOneSavedResolvedResult() throws Exception {
+        String token = signupAndLogin("concurrent@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+        String payload = shareJson(folderId, "client-concurrent", "Concurrent Cafe", "fp-concurrent");
+        Callable<JsonNode> request = () -> postShare(token, payload);
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            List<JsonNode> results = executor.invokeAll(List.of(request, request)).stream()
+                    .map(future -> {
+                        try {
+                            return future.get();
+                        } catch (Exception exception) {
+                            throw new AssertionError(exception);
+                        }
+                    })
+                    .toList();
+
+            org.assertj.core.api.Assertions.assertThat(results.get(1).get("intakeId").asText())
+                    .isEqualTo(results.get(0).get("intakeId").asText());
+            org.assertj.core.api.Assertions.assertThat(results)
+                    .allSatisfy(result -> {
+                        org.assertj.core.api.Assertions.assertThat(result.get("status").asText()).isEqualTo("RESOLVED");
+                        org.assertj.core.api.Assertions.assertThat(result.get("failureReason").isNull()).isTrue();
+                        org.assertj.core.api.Assertions.assertThat(result.get("resolvedPlaceId").isNull()).isFalse();
+                    });
+        }
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1));
+        mockMvc.perform(get("/api/v1/folders/{folderId}/share-intake/unresolved", folderId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+    }
+    @Test
+    void unresolvedIntakeCanBeUpdatedAndResolvedLater() throws Exception {
+        String token = signupAndLogin("repair@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+        JsonNode unresolved = postShare(token, shareJson(folderId, "client-repair", "place: Alpha; place: Beta"));
+        String intakeId = unresolved.get("intakeId").asText();
+        String candidateId = unresolved.get("candidates").get(0).get("candidateId").asText();
+
+        mockMvc.perform(get("/api/v1/share-intake/{intakeId}", intakeId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("NEEDS_MANUAL_FIX"));
+
+        mockMvc.perform(patch("/api/v1/share-intake/{intakeId}", intakeId)
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
+                        .content(shareJson(folderId, "client-repair", "Repaired Cafe")))
                 .andExpect(status().isOk())
-                .andReturn();
-        return objectMapper.readTree(resolveResult.getResponse().getContentAsString()).get("savedPlace").get("placeId").asText();
+                .andExpect(jsonPath("$.rawTitle").value("Repaired Cafe"));
+
+        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"candidateId\":\"" + candidateId + "\",\"category\":\"cafe\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.intake.status").value("RESOLVED"))
+                .andExpect(jsonPath("$.savedPlace.category").value("cafe"));
     }
 
-    private void acceptInvite(String folderId, String ownerToken, String viewerToken) throws Exception {
-        MvcResult inviteResult = mockMvc.perform(post("/api/v1/folders/{folderId}/invites", folderId)
-                        .header("Authorization", bearer(ownerToken))
+    private JsonNode postShare(String token, String payload) throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/share-intake")
+                        .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"VIEWER\"}"))
+                        .content(payload))
                 .andExpect(status().isCreated())
                 .andReturn();
-        String token = objectMapper.readTree(inviteResult.getResponse().getContentAsString()).get("token").asText();
-        mockMvc.perform(post("/api/v1/invites/{token}/accept", token)
-                        .header("Authorization", bearer(viewerToken)))
-                .andExpect(status().isOk());
+        return objectMapper.readTree(result.getResponse().getContentAsString());
+    }
+
+    private String shareJson(String folderId, String clientIntakeId, String title) {
+        return """
+                {
+                  "folderId": "%s",
+                  "clientIntakeId": "%s",
+                  "rawUrl": "https://instagram.com/reel/example",
+                  "rawTitle": "%s",
+                  "sourceApp": "instagram",
+                  "platform": "ios",
+                  "receivedVia": "native_share"
+                }
+                """.formatted(folderId, clientIntakeId, title);
+    }
+
+    private String shareJson(String folderId, String clientIntakeId, String title, String fingerprint) {
+        return """
+                {
+                  "folderId": "%s",
+                  "clientIntakeId": "%s",
+                  "rawUrl": "https://instagram.com/reel/example",
+                  "rawTitle": "%s",
+                  "sourceApp": "instagram",
+                  "platform": "ios",
+                  "receivedVia": "native_share",
+                  "contentFingerprint": "%s"
+                }
+                """.formatted(folderId, clientIntakeId, title, fingerprint);
     }
 
     private String createFolder(String ownerToken, String type) throws Exception {

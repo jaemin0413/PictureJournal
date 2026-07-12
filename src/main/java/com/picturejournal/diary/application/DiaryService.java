@@ -53,11 +53,8 @@ public class DiaryService {
     public DiaryEntry createEntry(UUID actorId, UUID folderId, CreateDiaryEntryCommand command) {
         requirePhotoDiaryMember(actorId, folderId);
         folderCapabilityPolicy.assertCanWriteToFolder(actorId, folderId);
-        MediaAsset mediaAsset = mediaService.requireMedia(requireUuid(command.mediaId(), "mediaId"));
-        if (!mediaAsset.uploaderUserId().equals(actorId)) {
-            throw new DomainException(ErrorCode.FORBIDDEN, "Only the uploader can attach this media asset.");
-        }
-        ResolvedLocation location = resolveLocation(command.latitude(), command.longitude(), mediaAsset);
+        MediaAsset mediaAsset = mediaService.requirePendingUpload(actorId, requireUuid(command.mediaId(), "mediaId"));
+        ResolvedLocation location = resolveLocation(command.latitude(), command.longitude());
         Instant now = Instant.now(clock);
         DiaryEntry entry = DiaryEntry.create(
                 UUID.randomUUID(),
@@ -72,7 +69,14 @@ public class DiaryService {
                 command.capturedAt() == null ? (mediaAsset.takenAt() == null ? now : mediaAsset.takenAt()) : command.capturedAt(),
                 normalizeTags(command.tags()),
                 now);
-        return diaryEntryStore.save(entry);
+        DiaryEntry savedEntry = diaryEntryStore.save(entry);
+        try {
+            mediaService.commitDiaryMedia(mediaAsset, folderId, savedEntry.entryId());
+        } catch (RuntimeException exception) {
+            diaryEntryStore.delete(savedEntry.entryId());
+            throw exception;
+        }
+        return savedEntry;
     }
 
     public List<DiaryEntry> listEntries(UUID actorId, UUID folderId, DiaryEntryFilter filter) {
@@ -136,10 +140,8 @@ public class DiaryService {
         return value;
     }
 
-    private ResolvedLocation resolveLocation(Double latitude, Double longitude, MediaAsset mediaAsset) {
-        Double resolvedLatitude = latitude == null ? mediaAsset.gpsLatitude() : latitude;
-        Double resolvedLongitude = longitude == null ? mediaAsset.gpsLongitude() : longitude;
-        return requireLocation(resolvedLatitude, resolvedLongitude);
+    private ResolvedLocation resolveLocation(Double latitude, Double longitude) {
+        return requireLocation(latitude, longitude);
     }
 
     private ResolvedLocation resolveUpdatedLocation(Double latitude, Double longitude, DiaryEntry entry) {
@@ -150,7 +152,7 @@ public class DiaryService {
 
     private ResolvedLocation requireLocation(Double latitude, Double longitude) {
         if (latitude == null || longitude == null) {
-            throw invalidArgument("latitude and longitude are required when EXIF GPS is unavailable.");
+            throw invalidArgument("final latitude and longitude are required.");
         }
         if (latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) {
             throw invalidArgument("latitude or longitude is out of range.");

@@ -57,6 +57,13 @@ public class AuthController {
         return UserAccountResponse.from(authService.getCurrentUser(request.getHeader("Authorization")));
     }
 
+    @PostMapping("/logout")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    @SecurityRequirement(name = "bearerAuth")
+    public void logout(HttpServletRequest request) {
+        authService.logout(request.getHeader("Authorization"));
+    }
+
     public record SignupRequest(String email, String displayName, String password) {
     }
 

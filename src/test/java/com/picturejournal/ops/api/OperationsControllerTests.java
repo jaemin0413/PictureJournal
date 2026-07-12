@@ -101,6 +101,8 @@ class OperationsControllerTests {
                         .content("""
                                 {
                                   "folderId": "%s",
+                                  "clientIntakeId": "ops-readiness-intake",
+                                  "fingerprint": "ops-readiness-no-place",
                                   "rawUrl": "https://instagram.com/reel/no-place",
                                   "sourceApp": "instagram",
                                   "platform": "ios",

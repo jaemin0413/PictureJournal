@@ -53,8 +53,8 @@ public class PlaceController {
     @SecurityRequirement(name = "bearerAuth")
     public ShareIntakeResponse createShareIntake(HttpServletRequest request, @RequestBody CreateShareIntakeRequest requestBody) {
         return ShareIntakeResponse.from(placeService.createShareIntake(resolveActorId(request), new PlaceService.CreateShareIntakeCommand(
-                requestBody.folderId(), requestBody.rawUrl(), requestBody.rawTitle(), requestBody.rawText(), requestBody.sourceApp(),
-                requestBody.platform(), requestBody.receivedVia())));
+                requestBody.folderId(), requestBody.clientIntakeId(), requestBody.rawUrl(), requestBody.rawTitle(), requestBody.rawText(),
+                requestBody.sourceApp(), requestBody.platform(), requestBody.receivedVia(), requestBody.contentFingerprint())));
     }
 
     @GetMapping("/share-intake/{intakeId}")
@@ -62,12 +62,26 @@ public class PlaceController {
     public ShareIntakeResponse getShareIntake(HttpServletRequest request, @PathVariable UUID intakeId) {
         return ShareIntakeResponse.from(placeService.getShareIntake(resolveActorId(request), intakeId));
     }
-
-    @PostMapping("/share-intake/{intakeId}/save-draft")
+    @GetMapping("/folders/{folderId}/share-intake/unresolved")
     @SecurityRequirement(name = "bearerAuth")
-    public ShareIntakeResponse saveDraft(HttpServletRequest request, @PathVariable UUID intakeId) {
-        return ShareIntakeResponse.from(placeService.saveDraft(resolveActorId(request), intakeId));
+    public List<ShareIntakeResponse> listUnresolvedShareIntakes(HttpServletRequest request, @PathVariable UUID folderId) {
+        return placeService.listUnresolvedShareIntakes(resolveActorId(request), folderId).stream()
+                .map(ShareIntakeResponse::from)
+                .toList();
     }
+
+    @PatchMapping("/share-intake/{intakeId}")
+    @SecurityRequirement(name = "bearerAuth")
+    public ShareIntakeResponse updateUnresolvedShareIntake(
+            HttpServletRequest request,
+            @PathVariable UUID intakeId,
+            @RequestBody CreateShareIntakeRequest requestBody) {
+        return ShareIntakeResponse.from(placeService.updateUnresolvedShareIntake(resolveActorId(request), intakeId,
+                new PlaceService.CreateShareIntakeCommand(
+                        requestBody.folderId(), requestBody.clientIntakeId(), requestBody.rawUrl(), requestBody.rawTitle(), requestBody.rawText(),
+                        requestBody.sourceApp(), requestBody.platform(), requestBody.receivedVia(), requestBody.contentFingerprint())));
+    }
+
 
     @PostMapping("/share-intake/{intakeId}/resolve")
     @SecurityRequirement(name = "bearerAuth")
@@ -129,12 +143,14 @@ public class PlaceController {
 
     public record CreateShareIntakeRequest(
             UUID folderId,
+            String clientIntakeId,
             String rawUrl,
             String rawTitle,
             String rawText,
             String sourceApp,
             String platform,
-            String receivedVia) {
+            String receivedVia,
+            String contentFingerprint) {
     }
 
     public record ResolveShareIntakeRequest(
@@ -167,6 +183,7 @@ public class PlaceController {
 
     public record ShareIntakeResponse(
             UUID intakeId,
+            String clientIntakeId,
             UUID folderId,
             UUID receivedByUserId,
             String sourceApp,
@@ -176,6 +193,7 @@ public class PlaceController {
             String rawTitle,
             String rawText,
             String normalizedUrl,
+            String contentFingerprint,
             ShareIntakeStatus status,
             String failureReason,
             UUID resolvedPlaceId,
@@ -188,9 +206,9 @@ public class PlaceController {
         static ShareIntakeResponse from(PlaceService.ShareIntakeView view) {
             ShareIntakeItem intake = view.intake();
             return new ShareIntakeResponse(
-                    intake.intakeId(), intake.folderId(), intake.receivedByUserId(), intake.sourceApp(), intake.platform(),
-                    intake.receivedVia(), intake.rawUrl(), intake.rawTitle(), intake.rawText(), intake.normalizedUrl(), intake.status(),
-                    intake.failureReason(), intake.resolvedPlaceId(), intake.receivedAt(), intake.updatedAt(), intake.resolvedAt(),
+                    intake.intakeId(), intake.clientIntakeId(), intake.folderId(), intake.receivedByUserId(), intake.sourceApp(), intake.platform(),
+                    intake.receivedVia(), intake.rawUrl(), intake.rawTitle(), intake.rawText(), intake.normalizedUrl(), intake.contentFingerprint(),
+                    intake.status(), intake.failureReason(), intake.resolvedPlaceId(), intake.receivedAt(), intake.updatedAt(), intake.resolvedAt(),
                     view.candidates().stream().map(PlaceCandidateResponse::from).toList(),
                     view.resolvedPlace() == null ? null : SavedPlaceResponse.from(view.resolvedPlace()));
         }

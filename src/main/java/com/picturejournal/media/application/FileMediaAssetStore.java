@@ -6,8 +6,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Stream;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -42,6 +44,29 @@ public class FileMediaAssetStore implements MediaAssetStore {
         return Optional.of(readRequired(path, MediaAsset.class, "media asset " + mediaId));
     }
 
+    public synchronized List<MediaAsset> listAssets() {
+        Path assetsDirectory = rootDirectory.resolve("assets");
+        if (!Files.isDirectory(assetsDirectory)) {
+            return List.of();
+        }
+        try (Stream<Path> paths = Files.list(assetsDirectory)) {
+            return paths
+                    .filter(path -> path.getFileName().toString().endsWith(".json"))
+                    .map(path -> readRequired(path, MediaAsset.class, "media asset " + path.getFileName()))
+                    .toList();
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to list media assets", exception);
+        }
+    }
+
+    public synchronized void deleteAsset(UUID mediaId) {
+        deleteIfExists(assetPath(mediaId), "media asset " + mediaId);
+    }
+
+    public synchronized void deleteBlob(String storageKey) {
+        deleteIfExists(blobPath(storageKey), "media blob " + storageKey);
+    }
+
     public Path blobPath(String storageKey) {
         return rootDirectory.resolve("blobs").resolve(storageKey);
     }
@@ -64,6 +89,14 @@ public class FileMediaAssetStore implements MediaAssetStore {
             objectMapper.writeValue(path.toFile(), value);
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to persist " + label, exception);
+        }
+    }
+
+    private void deleteIfExists(Path path, String label) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to delete " + label, exception);
         }
     }
 }

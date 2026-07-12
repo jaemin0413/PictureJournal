@@ -80,6 +80,17 @@ public class AuthService {
                 .orElseThrow(this::unauthorized);
     }
 
+    public void logout(String authorizationHeader) {
+        String token = extractBearerToken(authorizationHeader);
+        AuthSession authSession = authSessionStore.findByToken(token)
+                .filter(this::isSessionActive)
+                .orElseThrow(this::unauthorized);
+        authSessionStore.save(new AuthSession(
+                authSession.token(),
+                authSession.userId(),
+                Instant.now(clock).minus(SESSION_TTL).minusSeconds(1)));
+    }
+
     private boolean isSessionActive(AuthSession authSession) {
         Instant expiresAt = authSession.createdAt().plus(SESSION_TTL);
         return !expiresAt.isBefore(Instant.now(clock));

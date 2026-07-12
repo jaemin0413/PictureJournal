@@ -7,11 +7,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.picturejournal.auth.application.AuthSession;
 import com.picturejournal.auth.application.AuthService;
 import com.picturejournal.auth.application.FileAuthSessionStore;
 import com.picturejournal.auth.application.FileUserAccountStore;
 import com.picturejournal.shared.error.GlobalExceptionHandler;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -27,13 +30,15 @@ class AuthControllerTests {
 
     private MockMvc mockMvc;
     private ObjectMapper objectMapper;
+    private FileAuthSessionStore authSessionStore;
 
     @BeforeEach
     void setUp() {
         objectMapper = new ObjectMapper().findAndRegisterModules();
+        authSessionStore = new FileAuthSessionStore(objectMapper, tempDir.resolve("sessions"));
         AuthService authService = new AuthService(
                 new FileUserAccountStore(objectMapper, tempDir.resolve("users")),
-                new FileAuthSessionStore(objectMapper, tempDir.resolve("sessions")));
+                authSessionStore);
         mockMvc = MockMvcBuilders.standaloneSetup(new AuthController(authService))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -73,6 +78,77 @@ class AuthControllerTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.email").value("owner@example.com"))
                 .andExpect(jsonPath("$.displayName").value("Owner"));
+    }
+
+    @Test
+    void logoutRevokesTokenForMeValidation() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/signup")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "owner@example.com",
+                                  "displayName": "Owner",
+                                  "password": "secret"
+                                }
+                                """))
+                .andExpect(status().isCreated());
+
+        MvcResult loginResult = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "owner@example.com",
+                                  "password": "secret"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String token = objectMapper.readTree(loginResult.getResponse().getContentAsString()).get("token").asText();
+
+        mockMvc.perform(post("/api/v1/auth/logout")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(get("/api/v1/auth/me")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+    }
+
+    @Test
+    void staleRestoredSessionIsRejectedByMeValidation() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/signup")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "owner@example.com",
+                                  "displayName": "Owner",
+                                  "password": "secret"
+                                }
+                                """))
+                .andExpect(status().isCreated());
+
+        MvcResult loginResult = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "owner@example.com",
+                                  "password": "secret"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode loginJson = objectMapper.readTree(loginResult.getResponse().getContentAsString());
+        String token = loginJson.get("token").asText();
+        UUID userId = UUID.fromString(loginJson.get("user").get("userId").asText());
+        authSessionStore.save(new AuthSession(token, userId, Instant.EPOCH));
+
+        mockMvc.perform(get("/api/v1/auth/me")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
 
     @Test

@@ -5,9 +5,11 @@ import com.picturejournal.place.domain.PlaceCandidate;
 import com.picturejournal.place.domain.SavedPlace;
 import com.picturejournal.place.domain.ShareIntakeItem;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -73,8 +75,40 @@ public class FilePlaceStore implements PlaceStore {
 
     @Override
     public synchronized SavedPlace savePlace(SavedPlace savedPlace) {
+        if (savedPlace.shareIntakeId() != null) {
+            Optional<SavedPlace> existing = listFiles(placesDirectory(), SavedPlace.class, "saved place")
+                    .filter(place -> savedPlace.shareIntakeId().equals(place.shareIntakeId()))
+                    .findFirst();
+            if (existing.isPresent()) {
+                return existing.get();
+            }
+        }
         writeJson(placePath(savedPlace.placeId()), savedPlace, "saved place " + savedPlace.placeId());
         return savedPlace;
+    }
+
+    @Override
+    public synchronized ResolutionWrite saveResolution(ShareIntakeItem resolvedIntake, SavedPlace savedPlace) {
+        SavedPlace persistedPlace = listFiles(placesDirectory(), SavedPlace.class, "saved place")
+                .filter(place -> resolvedIntake.intakeId().equals(place.shareIntakeId()))
+                .findFirst()
+                .orElse(savedPlace);
+        ShareIntakeItem persistedIntake = resolvedIntake.resolvedPlaceId().equals(persistedPlace.placeId())
+                ? resolvedIntake
+                : resolvedIntake.resolve(persistedPlace.placeId(), resolvedIntake.updatedAt());
+        boolean createdPlace = persistedPlace == savedPlace;
+        try {
+            if (createdPlace) {
+                writeJson(placePath(persistedPlace.placeId()), persistedPlace, "saved place " + persistedPlace.placeId());
+            }
+            writeJson(intakePath(persistedIntake.intakeId()), persistedIntake, "share intake " + persistedIntake.intakeId());
+            return new ResolutionWrite(persistedIntake, persistedPlace);
+        } catch (RuntimeException exception) {
+            if (createdPlace) {
+                deletePlace(persistedPlace.placeId());
+            }
+            throw exception;
+        }
     }
 
     @Override
@@ -159,7 +193,17 @@ public class FilePlaceStore implements PlaceStore {
     private void writeJson(Path path, Object value, String label) {
         try {
             Files.createDirectories(path.getParent());
-            objectMapper.writeValue(path.toFile(), value);
+            Path tempPath = Files.createTempFile(path.getParent(), path.getFileName().toString(), ".tmp");
+            try {
+                objectMapper.writeValue(tempPath.toFile(), value);
+                try {
+                    Files.move(tempPath, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException exception) {
+                    Files.move(tempPath, path, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally {
+                Files.deleteIfExists(tempPath);
+            }
         } catch (IOException exception) {
             throw new IllegalStateException("Failed to persist " + label, exception);
         }

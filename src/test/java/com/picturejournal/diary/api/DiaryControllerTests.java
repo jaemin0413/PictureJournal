@@ -5,11 +5,13 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.picturejournal.auth.api.AuthController;
 import com.picturejournal.auth.application.AuthService;
 import com.picturejournal.auth.application.FileAuthSessionStore;
@@ -23,6 +25,8 @@ import com.picturejournal.media.application.ExifMetadataExtractor;
 import com.picturejournal.media.application.FileMediaAssetStore;
 import com.picturejournal.media.application.MediaService;
 import com.picturejournal.shared.error.GlobalExceptionHandler;
+import java.nio.file.Files;
+import java.time.Instant;
 import java.nio.file.Path;
 import java.util.Base64;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,7 +60,8 @@ class DiaryControllerTests {
         CollaborationService collaborationService = new CollaborationService(collaborationStore, folderCapabilityPolicy);
         MediaService mediaService = new MediaService(
                 new FileMediaAssetStore(objectMapper, tempDir.resolve("media")),
-                new ExifMetadataExtractor(objectMapper));
+                new ExifMetadataExtractor(objectMapper),
+                collaborationStore);
         com.picturejournal.diary.application.DiaryService diaryService = new com.picturejournal.diary.application.DiaryService(
                 new com.picturejournal.diary.application.FileDiaryEntryStore(objectMapper, tempDir.resolve("diary")),
                 collaborationStore,
@@ -75,7 +80,7 @@ class DiaryControllerTests {
     void ownerCanUploadCreateListMapUpdateDetailAndDeleteDiaryEntry() throws Exception {
         String ownerToken = signupAndLogin("owner@example.com", "Owner");
         String folderId = createFolder(ownerToken, "PHOTO_DIARY");
-        String mediaId = uploadImage(ownerToken);
+        String mediaId = uploadImage(ownerToken, folderId);
 
         MvcResult createResult = mockMvc.perform(post("/api/v1/folders/{folderId}/diary-entries", folderId)
                         .header("Authorization", bearer(ownerToken))
@@ -144,7 +149,7 @@ class DiaryControllerTests {
     void gpsMissingPhotoRequiresManualLocationBeforeSaving() throws Exception {
         String ownerToken = signupAndLogin("owner@example.com", "Owner");
         String folderId = createFolder(ownerToken, "PHOTO_DIARY");
-        String mediaId = uploadImage(ownerToken);
+        String mediaId = uploadImage(ownerToken, folderId);
 
         mockMvc.perform(post("/api/v1/folders/{folderId}/diary-entries", folderId)
                         .header("Authorization", bearer(ownerToken))
@@ -157,25 +162,22 @@ class DiaryControllerTests {
                                 """.formatted(mediaId)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/diary-entries", folderId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     @Test
     void diaryEntriesStayOutOfReelsPlaceFolders() throws Exception {
         String ownerToken = signupAndLogin("owner@example.com", "Owner");
         String folderId = createFolder(ownerToken, "REELS_PLACE");
-        String mediaId = uploadImage(ownerToken);
-
-        mockMvc.perform(post("/api/v1/folders/{folderId}/diary-entries", folderId)
-                        .header("Authorization", bearer(ownerToken))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "mediaId": "%s",
-                                  "title": "Wrong folder",
-                                  "latitude": 37.0,
-                                  "longitude": 127.0
-                                }
-                                """.formatted(mediaId)))
+        MockMultipartFile file = new MockMultipartFile("file", "photo.png", "image/png", TINY_PNG);
+        mockMvc.perform(multipart("/api/v1/media/direct-upload")
+                        .file(file)
+                        .param("intendedFolderId", folderId)
+                        .header("Authorization", bearer(ownerToken)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
     }
@@ -186,7 +188,7 @@ class DiaryControllerTests {
         String viewerToken = signupAndLogin("viewer@example.com", "Viewer");
         String folderId = createFolder(ownerToken, "PHOTO_DIARY");
         acceptInvite(folderId, ownerToken, viewerToken);
-        String mediaId = uploadImage(ownerToken);
+        String mediaId = uploadImage(ownerToken, folderId);
         String entryId = createEntry(ownerToken, folderId, mediaId);
 
         mockMvc.perform(get("/api/v1/diary-entries/{entryId}", entryId)
@@ -205,13 +207,172 @@ class DiaryControllerTests {
     @Test
     void directUploadRejectsNonImages() throws Exception {
         String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
         MockMultipartFile file = new MockMultipartFile("file", "note.txt", "text/plain", "hello".getBytes());
 
         mockMvc.perform(multipart("/api/v1/media/direct-upload")
                         .file(file)
+                        .param("intendedFolderId", folderId)
                         .header("Authorization", bearer(ownerToken)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+    }
+
+    @Test
+    void diaryCommitRejectsUnauthorizedAndAlreadyCommittedMediaWithoutPlaceholders() throws Exception {
+        String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String otherToken = signupAndLogin("other@example.com", "Other");
+        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
+        String mediaId = uploadImage(ownerToken, folderId);
+        acceptInvite(folderId, ownerToken, otherToken, "EDITOR");
+
+        mockMvc.perform(post("/api/v1/folders/{folderId}/diary-entries", folderId)
+                        .header("Authorization", bearer(otherToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "mediaId": "%s",
+                                  "title": "Unauthorized",
+                                  "latitude": 37.0,
+                                  "longitude": 127.0
+                                }
+                                """.formatted(mediaId)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/diary-entries", folderId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
+
+        String entryId = createEntry(ownerToken, folderId, mediaId);
+
+        mockMvc.perform(post("/api/v1/folders/{folderId}/diary-entries", folderId)
+                        .header("Authorization", bearer(ownerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "mediaId": "%s",
+                                  "title": "Duplicate",
+                                  "latitude": 37.0,
+                                  "longitude": 127.0
+                                }
+                                """.formatted(mediaId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/diary-entries", folderId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].entryId").value(entryId));
+
+        mockMvc.perform(get("/api/v1/diary-entries/{entryId}", entryId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.mediaId").value(mediaId));
+    }
+
+    @Test
+    void directUploadRejectsDeclaredMimeThatDoesNotMatchImageBytes() throws Exception {
+        String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
+        MockMultipartFile file = new MockMultipartFile("file", "photo.jpg", "image/jpeg", TINY_PNG);
+
+        mockMvc.perform(multipart("/api/v1/media/direct-upload")
+                        .file(file)
+                        .param("intendedFolderId", folderId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+    }
+
+    @Test
+    void mediaBinaryRequiresAuthorizationAndDoesNotExposeStorageKey() throws Exception {
+        String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String viewerToken = signupAndLogin("viewer@example.com", "Viewer");
+        String outsiderToken = signupAndLogin("outsider@example.com", "Outsider");
+        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
+        acceptInvite(folderId, ownerToken, viewerToken);
+        String mediaId = uploadImage(ownerToken, folderId);
+
+        mockMvc.perform(get("/api/v1/media/{mediaId}/binary", mediaId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("image/png"));
+
+        mockMvc.perform(get("/api/v1/media/{mediaId}/binary", mediaId)
+                        .header("Authorization", bearer(viewerToken)))
+                .andExpect(status().isForbidden());
+
+        createEntry(ownerToken, folderId, mediaId);
+
+        mockMvc.perform(get("/api/v1/media/{mediaId}/binary", mediaId)
+                        .header("Authorization", bearer(viewerToken)))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(TINY_PNG));
+
+        mockMvc.perform(get("/api/v1/media/{mediaId}/binary", mediaId)
+                        .header("Authorization", bearer(outsiderToken)))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void expiredPendingMediaIsUnavailableAndCleanupDoesNotDeleteCommittedMedia() throws Exception {
+        String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String folderId = createFolder(ownerToken, "PHOTO_DIARY");
+        String expiredPendingMediaId = uploadImage(ownerToken, folderId);
+        expireMedia(expiredPendingMediaId);
+
+        mockMvc.perform(get("/api/v1/media/{mediaId}/binary", expiredPendingMediaId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(post("/api/v1/media/pending/cleanup")
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.removedPendingMedia").value(1));
+
+        String committedMediaId = uploadImage(ownerToken, folderId);
+        createEntry(ownerToken, folderId, committedMediaId);
+        expireMedia(committedMediaId);
+
+        mockMvc.perform(post("/api/v1/media/pending/cleanup")
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.removedPendingMedia").value(0));
+
+        mockMvc.perform(get("/api/v1/media/{mediaId}/binary", committedMediaId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(content().bytes(TINY_PNG));
+    }
+
+    @Test
+    void diaryCommitRejectsMediaUploadedForAnotherFolder() throws Exception {
+        String ownerToken = signupAndLogin("owner@example.com", "Owner");
+        String intendedFolderId = createFolder(ownerToken, "PHOTO_DIARY");
+        String otherFolderId = createFolder(ownerToken, "PHOTO_DIARY");
+        String mediaId = uploadImage(ownerToken, intendedFolderId);
+
+        mockMvc.perform(post("/api/v1/folders/{folderId}/diary-entries", otherFolderId)
+                        .header("Authorization", bearer(ownerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "mediaId": "%s",
+                                  "title": "Wrong folder",
+                                  "latitude": 37.0,
+                                  "longitude": 127.0
+                                }
+                                """.formatted(mediaId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/diary-entries", otherFolderId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 
     private String createEntry(String ownerToken, String folderId, String mediaId) throws Exception {
@@ -232,10 +393,14 @@ class DiaryControllerTests {
     }
 
     private void acceptInvite(String folderId, String ownerToken, String viewerToken) throws Exception {
+        acceptInvite(folderId, ownerToken, viewerToken, "VIEWER");
+    }
+
+    private void acceptInvite(String folderId, String ownerToken, String viewerToken, String role) throws Exception {
         MvcResult inviteResult = mockMvc.perform(post("/api/v1/folders/{folderId}/invites", folderId)
                         .header("Authorization", bearer(ownerToken))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"role\":\"VIEWER\"}"))
+                        .content("{\"role\":\"" + role + "\"}"))
                 .andExpect(status().isCreated())
                 .andReturn();
         String token = objectMapper.readTree(inviteResult.getResponse().getContentAsString()).get("token").asText();
@@ -259,16 +424,28 @@ class DiaryControllerTests {
         return objectMapper.readTree(folderResult.getResponse().getContentAsString()).get("folderId").asText();
     }
 
-    private String uploadImage(String ownerToken) throws Exception {
+    private String uploadImage(String ownerToken, String intendedFolderId) throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "photo.png", "image/png", TINY_PNG);
         MvcResult uploadResult = mockMvc.perform(multipart("/api/v1/media/direct-upload")
                         .file(file)
+                        .param("intendedFolderId", intendedFolderId)
                         .header("Authorization", bearer(ownerToken)))
                 .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.storageKey").doesNotExist())
+                .andExpect(jsonPath("$.intendedFolderId").value(intendedFolderId))
                 .andExpect(jsonPath("$.width").value(1))
                 .andExpect(jsonPath("$.height").value(1))
+                .andExpect(jsonPath("$.checksumSha256").isNotEmpty())
+                .andExpect(jsonPath("$.status").value("PENDING"))
                 .andReturn();
         return objectMapper.readTree(uploadResult.getResponse().getContentAsString()).get("mediaId").asText();
+    }
+
+    private void expireMedia(String mediaId) throws Exception {
+        Path assetPath = tempDir.resolve("media").resolve("assets").resolve(mediaId + ".json");
+        ObjectNode asset = (ObjectNode) objectMapper.readTree(Files.readString(assetPath));
+        asset.put("pendingExpiresAt", Instant.parse("2026-07-10T00:00:00Z").toString());
+        Files.writeString(assetPath, objectMapper.writeValueAsString(asset));
     }
 
     private String signupAndLogin(String email, String displayName) throws Exception {

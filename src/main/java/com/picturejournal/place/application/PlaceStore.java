@@ -21,10 +21,14 @@ public interface PlaceStore {
     List<PlaceCandidate> listCandidatesByIntakeId(UUID intakeId);
 
     SavedPlace savePlace(SavedPlace savedPlace);
+    ResolutionWrite saveResolution(ShareIntakeItem resolvedIntake, SavedPlace savedPlace);
 
     Optional<SavedPlace> findPlaceById(UUID placeId);
 
     List<SavedPlace> listPlacesByFolderId(UUID folderId);
 
     void deletePlace(UUID placeId);
+
+    record ResolutionWrite(ShareIntakeItem intake, SavedPlace place) {
+    }
 }
