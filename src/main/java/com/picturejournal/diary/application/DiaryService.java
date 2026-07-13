@@ -37,7 +37,7 @@ public class DiaryService {
         this(diaryEntryStore, collaborationStore, folderCapabilityPolicy, mediaService, Clock.systemUTC());
     }
 
-    DiaryService(
+    public DiaryService(
             DiaryEntryStore diaryEntryStore,
             CollaborationStore collaborationStore,
             FolderCapabilityPolicy folderCapabilityPolicy,
@@ -53,8 +53,8 @@ public class DiaryService {
     public DiaryEntry createEntry(UUID actorId, UUID folderId, CreateDiaryEntryCommand command) {
         requirePhotoDiaryMember(actorId, folderId);
         folderCapabilityPolicy.assertCanWriteToFolder(actorId, folderId);
-        MediaAsset mediaAsset = mediaService.requirePendingUpload(actorId, requireUuid(command.mediaId(), "mediaId"));
-        ResolvedLocation location = resolveLocation(command.latitude(), command.longitude());
+        MediaAsset mediaAsset = mediaService.requirePendingUpload(actorId, folderId, requireUuid(command.mediaId(), "mediaId"));
+        ResolvedLocation location = requireLocation(command.latitude(), command.longitude());
         Instant now = Instant.now(clock);
         DiaryEntry entry = DiaryEntry.create(
                 UUID.randomUUID(),
@@ -73,7 +73,11 @@ public class DiaryService {
         try {
             mediaService.commitDiaryMedia(mediaAsset, folderId, savedEntry.entryId());
         } catch (RuntimeException exception) {
-            diaryEntryStore.delete(savedEntry.entryId());
+            try {
+                diaryEntryStore.delete(savedEntry.entryId());
+            } catch (RuntimeException rollbackException) {
+                exception.addSuppressed(rollbackException);
+            }
             throw exception;
         }
         return savedEntry;
@@ -116,7 +120,7 @@ public class DiaryService {
         diaryEntryStore.delete(entryId);
     }
 
-    private Folder requirePhotoDiaryMember(UUID actorId, UUID folderId) {
+    private void requirePhotoDiaryMember(UUID actorId, UUID folderId) {
         Folder folder = collaborationStore.findFolderById(folderId)
                 .orElseThrow(() -> new DomainException(ErrorCode.RESOURCE_NOT_FOUND, "Folder " + folderId + " was not found."));
         if (folder.type() != FolderType.PHOTO_DIARY) {
@@ -125,7 +129,6 @@ public class DiaryService {
         collaborationStore.findMembership(folderId, actorId)
                 .orElseThrow(() -> new DomainException(ErrorCode.RESOURCE_NOT_FOUND,
                         "Actor " + actorId + " is not a member of folder " + folderId + "."));
-        return folder;
     }
 
     private DiaryEntry requireEntry(UUID entryId) {
@@ -140,9 +143,6 @@ public class DiaryService {
         return value;
     }
 
-    private ResolvedLocation resolveLocation(Double latitude, Double longitude) {
-        return requireLocation(latitude, longitude);
-    }
 
     private ResolvedLocation resolveUpdatedLocation(Double latitude, Double longitude, DiaryEntry entry) {
         double resolvedLatitude = latitude == null ? entry.latitude() : latitude;
@@ -154,7 +154,8 @@ public class DiaryService {
         if (latitude == null || longitude == null) {
             throw invalidArgument("final latitude and longitude are required.");
         }
-        if (latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) {
+        if (!Double.isFinite(latitude) || !Double.isFinite(longitude)
+                || latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) {
             throw invalidArgument("latitude or longitude is out of range.");
         }
         return new ResolvedLocation(latitude, longitude);

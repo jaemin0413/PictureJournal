@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.UUID;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
@@ -64,8 +65,14 @@ public class AuthService {
         String email = normalizeEmail(command.email());
         String password = requirePassword(command.password());
         UserAccount userAccount = userAccountStore.findByEmail(email)
-                .filter(account -> matchesPassword(account.passwordHash(), password))
                 .orElseThrow(this::unauthorized);
+        try {
+            if (!matchesPassword(userAccount.passwordHash(), password)) {
+                throw unauthorized();
+            }
+        } catch (MalformedPasswordHashException exception) {
+            throw new DomainException(ErrorCode.UNAUTHORIZED, "Authentication is required.", exception);
+        }
 
         AuthSession authSession = authSessionStore.save(new AuthSession(UUID.randomUUID().toString(), userAccount.userId(), Instant.now(clock)));
         return new AuthenticatedSession(authSession, userAccount);
@@ -85,15 +92,12 @@ public class AuthService {
         AuthSession authSession = authSessionStore.findByToken(token)
                 .filter(this::isSessionActive)
                 .orElseThrow(this::unauthorized);
-        authSessionStore.save(new AuthSession(
-                authSession.token(),
-                authSession.userId(),
-                Instant.now(clock).minus(SESSION_TTL).minusSeconds(1)));
+        authSessionStore.deleteByToken(token);
     }
 
     private boolean isSessionActive(AuthSession authSession) {
         Instant expiresAt = authSession.createdAt().plus(SESSION_TTL);
-        return !expiresAt.isBefore(Instant.now(clock));
+        return expiresAt.isAfter(Instant.now(clock));
     }
 
     private DomainException unauthorized() {
@@ -115,7 +119,7 @@ public class AuthService {
 
     private String normalizeEmail(String value) {
         String normalized = normalizeRequired(value, "email");
-        return normalized.toLowerCase();
+        return normalized.toLowerCase(Locale.ROOT);
     }
 
     private String requirePassword(String value) {
@@ -150,22 +154,42 @@ public class AuthService {
     }
 
     private boolean matchesPassword(String passwordHash, String candidatePassword) {
-        String[] parts = passwordHash.split(":", 3);
+        if (passwordHash == null) {
+            throw malformedPasswordHash("hash is missing", null);
+        }
+        String[] parts = passwordHash.split(":", -1);
         if (parts.length != 3) {
-            return false;
+            throw malformedPasswordHash("expected iteration, salt, and hash values", null);
         }
 
-        int iterations;
         try {
-            iterations = Integer.parseInt(parts[0]);
+            int iterations = Integer.parseInt(parts[0]);
+            if (iterations != PASSWORD_HASH_ITERATIONS) {
+                throw malformedPasswordHash("iterations are unsupported", null);
+            }
+
             byte[] salt = Base64.getDecoder().decode(parts[1]);
             byte[] expectedHash = Base64.getDecoder().decode(parts[2]);
+            if (salt.length != PASSWORD_SALT_BYTES || expectedHash.length != PASSWORD_HASH_BYTES) {
+                throw malformedPasswordHash("salt or hash length is invalid", null);
+            }
+
             byte[] candidateHash = derivePasswordHash(candidatePassword.toCharArray(), salt, iterations);
             return MessageDigest.isEqual(expectedHash, candidateHash);
         } catch (IllegalArgumentException exception) {
-            return false;
+            throw malformedPasswordHash("invalid encoding or iteration value", exception);
         }
+    }
 
+    private MalformedPasswordHashException malformedPasswordHash(String detail, Throwable cause) {
+        return new MalformedPasswordHashException("Malformed stored password hash: " + detail, cause);
+    }
+
+    private static final class MalformedPasswordHashException extends IllegalStateException {
+
+        private MalformedPasswordHashException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
     private byte[] derivePasswordHash(char[] password, byte[] salt, int iterations) {
         try {

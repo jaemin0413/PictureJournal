@@ -14,10 +14,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1")
-@ApiResponses({
-        @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class))),
-        @ApiResponse(responseCode = "429", description = "Rate limited", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
-})
 public class OperationsController {
 
     private final GeocodeService geocodeService;
@@ -29,16 +25,29 @@ public class OperationsController {
     }
 
     @GetMapping("/places/search")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Search results", content = @Content(schema = @Schema(implementation = GeocodeService.SearchResult.class))),
+            @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class))),
+            @ApiResponse(responseCode = "429", description = "Rate limited", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
+    })
     public GeocodeService.SearchResult searchPlaces(@RequestParam("q") String query) {
         return geocodeService.search(query);
     }
 
     @GetMapping("/geocode/reverse")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Reverse geocode result", content = @Content(schema = @Schema(implementation = GeocodeService.ReverseResult.class))),
+            @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class))),
+            @ApiResponse(responseCode = "429", description = "Rate limited", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
+    })
     public GeocodeService.ReverseResult reverseGeocode(@RequestParam("lat") double latitude, @RequestParam("lng") double longitude) {
         return geocodeService.reverse(latitude, longitude);
     }
 
     @GetMapping("/ops/readiness")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Readiness report", content = @Content(schema = @Schema(implementation = OperationsReadinessService.ReadinessReport.class)))
+    })
     public OperationsReadinessService.ReadinessReport readiness() {
         return readinessService.report();
     }

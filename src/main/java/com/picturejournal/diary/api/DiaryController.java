@@ -5,11 +5,15 @@ import com.picturejournal.diary.application.DiaryService;
 import com.picturejournal.diary.domain.DiaryEntry;
 import com.picturejournal.shared.error.GlobalExceptionHandler;
 import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ArraySchema;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -47,10 +51,11 @@ public class DiaryController {
     @PostMapping("/folders/{folderId}/diary-entries")
     @ResponseStatus(HttpStatus.CREATED)
     @SecurityRequirement(name = "bearerAuth")
+    @ApiResponse(responseCode = "201", description = "Diary entry created", content = @Content(schema = @Schema(implementation = DiaryEntryResponse.class)))
     public DiaryEntryResponse createEntry(
             HttpServletRequest request,
             @PathVariable UUID folderId,
-            @RequestBody UpsertDiaryEntryRequest requestBody) {
+            @Valid @RequestBody UpsertDiaryEntryRequest requestBody) {
         return DiaryEntryResponse.from(diaryService.createEntry(
                 resolveActorId(request),
                 folderId,
@@ -67,6 +72,7 @@ public class DiaryController {
 
     @GetMapping("/folders/{folderId}/diary-entries")
     @SecurityRequirement(name = "bearerAuth")
+    @ApiResponse(responseCode = "200", description = "Diary entries", content = @Content(array = @ArraySchema(schema = @Schema(implementation = DiaryEntryResponse.class))))
     public List<DiaryEntryResponse> listEntries(
             HttpServletRequest request,
             @PathVariable UUID folderId,
@@ -81,6 +87,7 @@ public class DiaryController {
 
     @GetMapping("/folders/{folderId}/diary-entries/map")
     @SecurityRequirement(name = "bearerAuth")
+    @ApiResponse(responseCode = "200", description = "Diary map entries", content = @Content(array = @ArraySchema(schema = @Schema(implementation = DiaryMapEntryResponse.class))))
     public List<DiaryMapEntryResponse> listMapEntries(HttpServletRequest request, @PathVariable UUID folderId) {
         return diaryService.listEntries(resolveActorId(request), folderId, new DiaryService.DiaryEntryFilter(null, null, null, null)).stream()
                 .map(DiaryMapEntryResponse::from)
@@ -89,16 +96,18 @@ public class DiaryController {
 
     @GetMapping("/diary-entries/{entryId}")
     @SecurityRequirement(name = "bearerAuth")
+    @ApiResponse(responseCode = "200", description = "Diary entry", content = @Content(schema = @Schema(implementation = DiaryEntryResponse.class)))
     public DiaryEntryResponse getEntry(HttpServletRequest request, @PathVariable UUID entryId) {
         return DiaryEntryResponse.from(diaryService.getEntry(resolveActorId(request), entryId));
     }
 
     @PatchMapping("/diary-entries/{entryId}")
     @SecurityRequirement(name = "bearerAuth")
+    @ApiResponse(responseCode = "200", description = "Diary entry updated", content = @Content(schema = @Schema(implementation = DiaryEntryResponse.class)))
     public DiaryEntryResponse updateEntry(
             HttpServletRequest request,
             @PathVariable UUID entryId,
-            @RequestBody UpsertDiaryEntryRequest requestBody) {
+            @Valid @RequestBody UpsertDiaryEntryRequest requestBody) {
         return DiaryEntryResponse.from(diaryService.updateEntry(
                 resolveActorId(request),
                 entryId,
@@ -128,8 +137,10 @@ public class DiaryController {
             String title,
             String body,
             String placeName,
-            Double latitude,
-            Double longitude,
+            @DecimalMin("-90.0") @DecimalMax("90.0")
+            @Schema(minimum = "-90.0", maximum = "90.0") Double latitude,
+            @DecimalMin("-180.0") @DecimalMax("180.0")
+            @Schema(minimum = "-180.0", maximum = "180.0") Double longitude,
             Instant capturedAt,
             List<String> tags) {
     }

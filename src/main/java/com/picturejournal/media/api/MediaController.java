@@ -13,10 +13,12 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import jakarta.servlet.http.HttpServletRequest;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -66,16 +68,13 @@ public class MediaController {
         MediaService.BinaryMedia binaryMedia = mediaService.readAuthorizedBinary(resolveActorId(request), mediaId);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(binaryMedia.mediaAsset().mimeType()))
-                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename(binaryMedia.mediaAsset()) + "\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline()
+                        .filename(filename(binaryMedia.mediaAsset()), StandardCharsets.UTF_8)
+                        .build()
+                        .toString())
                 .body(binaryMedia.bytes());
     }
 
-    @PostMapping("/pending/cleanup")
-    @SecurityRequirement(name = "bearerAuth")
-    public MediaService.CleanupResult cleanupPending(HttpServletRequest request) {
-        resolveActorId(request);
-        return new MediaService.CleanupResult(mediaService.cleanupExpiredPending());
-    }
 
     private UUID resolveActorId(HttpServletRequest request) {
         return authService.getCurrentUser(request.getHeader("Authorization")).userId();
@@ -83,7 +82,7 @@ public class MediaController {
 
     private String filename(MediaAsset mediaAsset) {
         if (mediaAsset.originalFilename() != null) {
-            return mediaAsset.originalFilename().replace("\"", "");
+            return mediaAsset.originalFilename();
         }
         return mediaAsset.mediaId() + ("image/png".equals(mediaAsset.mimeType()) ? ".png" : ".jpg");
     }

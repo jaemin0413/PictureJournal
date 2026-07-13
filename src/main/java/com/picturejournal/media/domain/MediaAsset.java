@@ -33,6 +33,9 @@ public record MediaAsset(
         Objects.requireNonNull(mediaId, "mediaId must not be null");
         Objects.requireNonNull(uploaderUserId, "uploaderUserId must not be null");
         Objects.requireNonNull(storageKey, "storageKey must not be null");
+        if (!storageKey.matches("[A-Za-z0-9][A-Za-z0-9._-]{0,127}") || storageKey.contains("..")) {
+            throw new IllegalArgumentException("storageKey contains unsupported characters");
+        }
         Objects.requireNonNull(mimeType, "mimeType must not be null");
         Objects.requireNonNull(checksumSha256, "checksumSha256 must not be null");
         Objects.requireNonNull(status, "status must not be null");
@@ -71,6 +74,9 @@ public record MediaAsset(
         if (!folderId.equals(intendedFolderId)) {
             throw new IllegalStateException("media asset was uploaded for a different folder");
         }
+        if (!pendingExpiresAt.isAfter(committedAt)) {
+            throw new IllegalStateException("media asset has expired");
+        }
         return new MediaAsset(
                 mediaId,
                 uploaderUserId,
@@ -99,7 +105,7 @@ public record MediaAsset(
     @JsonIgnore
     public boolean isExpired(Instant now) {
         Objects.requireNonNull(now, "now must not be null");
-        return status == Status.PENDING && pendingExpiresAt != null && !pendingExpiresAt.isAfter(now);
+        return status == Status.PENDING && !pendingExpiresAt.isAfter(now);
     }
 
     public enum Status {

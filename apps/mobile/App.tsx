@@ -7,7 +7,7 @@ import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
 import { useShareIntent } from 'expo-share-intent';
 import type { ComponentProps } from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 type Screen = 'auth' | 'folders' | 'diaryFeed' | 'diaryComposer' | 'diaryDetail' | 'placesList' | 'placeDetailInbox';
@@ -67,37 +67,60 @@ type PendingSharePayload = {
   sourceApp: string;
   platform: string;
   receivedVia: string;
+  lastError?: string;
+  retryState?: RetryState;
 };
+type RetryState = 'retryable' | 'auth' | 'validation' | 'conflict';
+type PendingShareMetadata = {
+  generation: string;
+  count: number;
+  checksum: string;
+  receipts: Record<string, string>;
+};
+type CoordinateProvenance = 'exif' | 'current' | 'manual';
 type PickedPhoto = { uri: string; name: string; mimeType: string; latitude?: number; longitude?: number; takenAt?: string };
 
 type JsonRecord = Record<string, unknown>;
 
+const developmentBuild = typeof __DEV__ === 'undefined' || __DEV__;
 const configuredApiBaseUrl =
   process.env.EXPO_PUBLIC_API_BASE_URL ??
   (Platform.OS === 'android'
     ? (Constants.expoConfig?.extra?.apiBaseUrlAndroidEmulator as string | undefined)
     : (Constants.expoConfig?.extra?.apiBaseUrl as string | undefined));
-const apiBaseUrl = (configuredApiBaseUrl ?? 'http://localhost:8080').replace(/\/$/, '');
+if (!developmentBuild && !configuredApiBaseUrl) throw new Error('EXPO_PUBLIC_API_BASE_URL is required for release builds.');
+const apiBaseUrl = (configuredApiBaseUrl ?? (Platform.OS === 'android' ? 'http://10.0.2.2:8080' : 'http://localhost:8080')).replace(/\/$/, '');
+if (!developmentBuild && !apiBaseUrl.startsWith('https://')) throw new Error('Release API URL must use HTTPS.');
 const sessionKey = 'picturejournal.session.v1';
-const pendingShareKey = 'picturejournal.pendingShares.v1';
+const pendingShareKey = 'picturejournal.pendingShares.v3';
+const pendingShareChunkByteLimit = 1800;
 const diaryFolderKey = 'picturejournal.diaryFolder.v1';
 const placesFolderKey = 'picturejournal.placesFolder.v1';
-const pendingShareTtlMs = 24 * 60 * 60 * 1000;
 const screens: { key: Screen; label: string; product: 'Core' | 'Photo Diary' | 'Saved Places' }[] = [
-  { key: 'auth', label: '1 Auth', product: 'Core' },
-  { key: 'folders', label: '2 Folder Select', product: 'Core' },
-  { key: 'diaryFeed', label: '3 Photo Diary Feed', product: 'Photo Diary' },
-  { key: 'diaryComposer', label: '4 Photo Diary Composer', product: 'Photo Diary' },
-  { key: 'diaryDetail', label: '5 Photo Diary Detail', product: 'Photo Diary' },
-  { key: 'placesList', label: '6 Saved Places List', product: 'Saved Places' },
-  { key: 'placeDetailInbox', label: '7 Place Detail + Unresolved Inbox', product: 'Saved Places' },
+  { key: 'auth', label: 'Sign in', product: 'Core' },
+  { key: 'folders', label: 'Folders', product: 'Core' },
+  { key: 'diaryFeed', label: 'Photo Diary', product: 'Photo Diary' },
+  { key: 'diaryComposer', label: 'New diary entry', product: 'Photo Diary' },
+  { key: 'diaryDetail', label: 'Diary detail', product: 'Photo Diary' },
+  { key: 'placesList', label: 'Saved Places', product: 'Saved Places' },
+  { key: 'placeDetailInbox', label: 'Place details and inbox', product: 'Saved Places' },
 ];
 
 function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-async function createPendingShare(input: {
+class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+function lengthPrefixed(values: string[]): string {
+  return values.map((value) => `${new TextEncoder().encode(value).length}:${value}`).join('');
+}
+
+export async function createPendingShare(input: {
   rawUrl: string;
   rawTitle: string;
   rawText: string;
@@ -106,34 +129,316 @@ async function createPendingShare(input: {
   receivedVia: string;
 }): Promise<PendingSharePayload> {
   const receivedAt = Date.now();
-  const canonical = [input.rawUrl.trim().toLowerCase(), input.rawTitle.trim(), input.rawText.trim().slice(0, 512), input.sourceApp, input.platform].join('|');
+  const canonical = lengthPrefixed([
+    input.rawUrl.trim(),
+    input.rawTitle.trim(),
+    input.rawText.trim(),
+    input.sourceApp,
+    input.platform,
+    input.receivedVia,
+  ]);
   const contentFingerprint = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, canonical);
-  const clientIntakeId = await Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    `${contentFingerprint}|${receivedAt}`,
-  );
+  const clientIntakeId = Crypto.randomUUID();
   return { ...input, receivedAt, contentFingerprint, clientIntakeId };
 }
 
-async function secureGet(key: string): Promise<string | null> {
-  try {
-    return await SecureStore.getItemAsync(key);
-  } catch {
-    return null;
-  }
+const webStoragePrefix = 'picturejournal.web.v1.';
+
+function getWebStorage() {
+  const storage = (globalThis as typeof globalThis & { localStorage?: { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void; removeItem: (key: string) => void } }).localStorage;
+  if (!storage) throw new Error('Durable web storage is unavailable.');
+  return {
+    getItem: (key: string) => storage.getItem(`${webStoragePrefix}${key}`),
+    setItem: (key: string, value: string) => storage.setItem(`${webStoragePrefix}${key}`, value),
+    removeItem: (key: string) => storage.removeItem(`${webStoragePrefix}${key}`),
+  };
 }
 
-async function secureSet(key: string, value: string): Promise<void> {
+export async function secureGet(key: string): Promise<string | null> {
+  if (Platform.OS === 'web') return getWebStorage().getItem(key);
+  return SecureStore.getItemAsync(key);
+}
+
+export async function secureSet(key: string, value: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    getWebStorage().setItem(key, value);
+    return;
+  }
   await SecureStore.setItemAsync(key, value, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY });
 }
 
-async function secureDelete(key: string): Promise<void> {
-  try {
-    await SecureStore.deleteItemAsync(key);
-  } catch {
-    // Missing secure storage should not block logout purging semantics on unsupported platforms.
+export async function secureDelete(key: string): Promise<void> {
+  if (Platform.OS === 'web') {
+    getWebStorage().removeItem(key);
+    return;
+  }
+  await SecureStore.deleteItemAsync(key);
+}
+
+export function utf8Chunks(value: string, byteLimit = pendingShareChunkByteLimit): string[] {
+  if (!Number.isInteger(byteLimit) || byteLimit < 1) throw new Error('Chunk byte limit must be a positive integer.');
+  const encoder = new TextEncoder();
+  const chunks: string[] = [];
+  let chunk = '';
+  let chunkBytes = 0;
+  for (const character of value) {
+    const characterBytes = encoder.encode(character).length;
+    if (characterBytes > byteLimit) throw new Error('A UTF-8 character exceeds the storage chunk limit.');
+    if (chunk && chunkBytes + characterBytes > byteLimit) {
+      chunks.push(chunk);
+      chunk = '';
+      chunkBytes = 0;
+    }
+    chunk += character;
+    chunkBytes += characterBytes;
+  }
+  return chunks.length || chunk ? [...chunks, chunk] : [''];
+}
+
+export function utf8Checksum(value: string): string {
+  let hash = 0x811c9dc5;
+  for (const byte of new TextEncoder().encode(value)) {
+    hash ^= byte;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export function createPendingShareMetadata(generation: string, chunks: string[], receipts: Record<string, string> = {}): PendingShareMetadata {
+  if (!generation || !chunks.length) throw new Error('Pending share generation metadata is invalid.');
+  return { generation, count: chunks.length, checksum: utf8Checksum(chunks.join('')), receipts };
+}
+
+function parsePendingShareMetadata(raw: string): PendingShareMetadata {
+  const metadata = JSON.parse(raw) as PendingShareMetadata;
+  if (
+    typeof metadata.generation !== 'string' ||
+    !metadata.generation ||
+    !Number.isInteger(metadata.count) ||
+    metadata.count < 1 ||
+    typeof metadata.checksum !== 'string' ||
+    !metadata.checksum ||
+    !metadata.receipts ||
+    typeof metadata.receipts !== 'object' ||
+    Array.isArray(metadata.receipts)
+  ) {
+    throw new Error('Pending share storage metadata is invalid.');
+  }
+  return metadata;
+}
+
+export async function secureGetChunked(key: string): Promise<{ value: string; metadata: PendingShareMetadata } | null> {
+  const rawMetadata = await secureGet(`${key}.meta`);
+  if (!rawMetadata) return null;
+  const metadata = parsePendingShareMetadata(rawMetadata);
+  const chunks = await Promise.all(Array.from({ length: metadata.count }, (_, index) => secureGet(`${key}.${metadata.generation}.${index}`)));
+  if (chunks.some((chunk) => chunk === null)) throw new Error('Pending share storage is incomplete.');
+  const value = chunks.join('');
+  if (utf8Checksum(value) !== metadata.checksum) throw new Error('Pending share storage checksum does not match.');
+  return { value, metadata };
+}
+
+export async function secureSetChunked(key: string, value: string, receipts: Record<string, string>): Promise<void> {
+  const previousRawMetadata = await secureGet(`${key}.meta`);
+  let previousMetadata: PendingShareMetadata | null = null;
+  if (previousRawMetadata) {
+    try {
+      previousMetadata = parsePendingShareMetadata(previousRawMetadata);
+    } catch {
+      await secureDelete(`${key}.meta`).catch(() => undefined);
+    }
+  }
+  const generation = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const chunks = utf8Chunks(value);
+  for (const [index, chunk] of chunks.entries()) await secureSet(`${key}.${generation}.${index}`, chunk);
+  const metadata = createPendingShareMetadata(generation, chunks, receipts);
+  await secureSet(`${key}.meta`, JSON.stringify(metadata));
+  if (previousMetadata) {
+    for (let index = 0; index < previousMetadata.count; index += 1) {
+      try {
+        await secureDelete(`${key}.${previousMetadata.generation}.${index}`);
+      } catch {
+        // The committed pointer remains valid; a later successful write can clean this obsolete generation.
+      }
+    }
   }
 }
+
+export async function secureDeleteChunked(key: string): Promise<void> {
+  const rawMetadata = await secureGet(`${key}.meta`);
+  if (!rawMetadata) return;
+  let metadata: PendingShareMetadata | null = null;
+  let diagnostic: Error | null = null;
+  try {
+    metadata = parsePendingShareMetadata(rawMetadata);
+  } catch (error) {
+    diagnostic = error instanceof Error ? error : new Error('Pending share storage metadata is invalid.');
+  }
+  try {
+    await secureDelete(`${key}.meta`);
+  } catch (error) {
+    diagnostic = error instanceof Error ? error : new Error('Pending share metadata deletion failed.');
+  }
+  if (metadata) {
+    for (let index = 0; index < metadata.count; index += 1) {
+      try {
+        await secureDelete(`${key}.${metadata.generation}.${index}`);
+      } catch (error) {
+        diagnostic = diagnostic ?? (error instanceof Error ? error : new Error('Pending share chunk deletion failed.'));
+      }
+    }
+  }
+  if (diagnostic) throw diagnostic;
+}
+
+export function parseCoordinate(value: string, label: 'latitude' | 'longitude'): number {
+  if (!value.trim()) throw new Error(`Final ${label} is required.`);
+  const coordinate = Number(value);
+  const maximum = label === 'latitude' ? 90 : 180;
+  if (!Number.isFinite(coordinate) || coordinate < -maximum || coordinate > maximum) {
+    throw new Error(`Final ${label} must be between ${-maximum} and ${maximum}.`);
+  }
+  return coordinate;
+}
+
+export function normalizeExifCoordinate(value: unknown, direction: unknown, negativeDirection: 'S' | 'W'): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  const positiveDirection = negativeDirection === 'S' ? 'N' : 'E';
+  const normalizedDirection = typeof direction === 'string' ? direction.toUpperCase() : '';
+  if (normalizedDirection !== positiveDirection && normalizedDirection !== negativeDirection) return undefined;
+  const normalized = normalizedDirection === negativeDirection ? -value : value;
+  const maximum = negativeDirection === 'S' ? 90 : 180;
+  return normalized <= maximum ? normalized : undefined;
+}
+
+export function normalizeExifTakenAt(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(normalized)) return undefined;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
+export function classifyShareRetry(statusCode: number | undefined): RetryState {
+  if (statusCode === 401 || statusCode === 403) return 'auth';
+  if (statusCode === 409) return 'conflict';
+  if (statusCode !== undefined && statusCode >= 400 && statusCode < 500
+      && statusCode !== 408 && statusCode !== 425 && statusCode !== 429) return 'validation';
+  return 'retryable';
+}
+
+export function classifyAuthResponse(statusCode: number | undefined): 'reauthenticate' | 'retry' | 'valid' {
+  if (statusCode === 401 || statusCode === 403) return 'reauthenticate';
+  if (statusCode !== undefined && statusCode >= 200 && statusCode < 300) return 'valid';
+  return 'retry';
+}
+
+export function dedupePendingShares(items: PendingSharePayload[]): PendingSharePayload[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item.clientIntakeId || seen.has(item.clientIntakeId)) return false;
+    seen.add(item.clientIntakeId);
+    return true;
+  });
+}
+
+export function parsePendingShares(raw: string): PendingSharePayload[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error('Pending share storage must contain an array.');
+  const allowedRetryStates = new Set<RetryState>(['retryable', 'auth', 'validation', 'conflict']);
+  for (const item of parsed) {
+    if (
+      !item
+      || typeof item !== 'object'
+      || typeof item.clientIntakeId !== 'string'
+      || typeof item.contentFingerprint !== 'string'
+      || !/^[0-9a-f]{64}$/.test(item.contentFingerprint)
+      || typeof item.receivedAt !== 'number'
+      || !Number.isFinite(item.receivedAt)
+      || typeof item.rawUrl !== 'string'
+      || typeof item.rawTitle !== 'string'
+      || typeof item.rawText !== 'string'
+      || typeof item.sourceApp !== 'string'
+      || typeof item.platform !== 'string'
+      || typeof item.receivedVia !== 'string'
+      || (item.retryState !== undefined && !allowedRetryStates.has(item.retryState))
+    ) throw new Error('Pending share storage contains an invalid record.');
+  }
+  return parsed as PendingSharePayload[];
+}
+
+function parseStoredSession(raw: string): Session {
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object') throw new Error('Stored session is invalid.');
+  const record = parsed as Record<string, unknown>;
+  const user = record.user;
+  if (
+    typeof record.token !== 'string'
+    || !record.token
+    || !user
+    || typeof user !== 'object'
+  ) throw new Error('Stored session is invalid.');
+  const userRecord = user as Record<string, unknown>;
+  if (
+    typeof userRecord.userId !== 'string'
+    || typeof userRecord.email !== 'string'
+    || typeof userRecord.displayName !== 'string'
+  ) throw new Error('Stored session is invalid.');
+  return record as unknown as Session;
+}
+export function updatePendingShareQueue(current: PendingSharePayload[], update: (items: PendingSharePayload[]) => PendingSharePayload[]): PendingSharePayload[] {
+  return dedupePendingShares(update(current));
+}
+export function applyPendingShareDelivery(
+  items: PendingSharePayload[],
+  receipts: Record<string, string>,
+  deliveryId: string,
+  item: PendingSharePayload,
+): { items: PendingSharePayload[]; receipts: Record<string, string>; added: boolean } {
+  if (receipts[deliveryId]) return { items, receipts, added: false };
+  return {
+    items: updatePendingShareQueue(items, (current) => [...current, item]),
+    receipts: { ...receipts, [deliveryId]: item.clientIntakeId },
+    added: true,
+  };
+}
+export function scopePendingShare(item: PendingSharePayload, userId?: string | null, intendedFolderId?: string | null): PendingSharePayload {
+  return {
+    ...item,
+    ...(userId ? { userId } : {}),
+    ...(userId && intendedFolderId ? { intendedFolderId } : {}),
+  };
+}
+
+export function shouldInvalidateSession(
+  request: { epoch: number; token: string; userId: string },
+  current: Session | null,
+  currentEpoch: number,
+): boolean {
+  return Boolean(current && request.epoch === currentEpoch && request.token === current.token && request.userId === current.user.userId);
+}
+
+export function isSessionOperationCurrent(
+  request: { epoch: number; token: string; userId: string },
+  current: Session | null,
+  currentEpoch: number,
+): boolean {
+  return shouldInvalidateSession(request, current, currentEpoch);
+}
+
+export function confirmPendingShareOwnership(
+  items: PendingSharePayload[],
+  userId: string,
+  intendedFolderId: string,
+  clientIntakeId?: string,
+): PendingSharePayload[] {
+  return items.map((item) => {
+    if (clientIntakeId && item.clientIntakeId !== clientIntakeId) return item;
+    if (item.intendedFolderId || (item.userId && item.userId !== userId)) return item;
+    return { ...item, userId, intendedFolderId };
+  });
+}
+
 
 export default function App() {
   const { hasShareIntent, shareIntent, resetShareIntent, error: shareIntentError } = useShareIntent({
@@ -144,21 +449,14 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('auth');
   const [mode, setMode] = useState<AuthMode>('login');
   const [session, setSession] = useState<Session | null>(null);
-  const [email, setEmail] = useState('demo@picturejournal.local');
-  const [displayName, setDisplayName] = useState('Picture Keeper');
-  const [password, setPassword] = useState('password123');
+  const [email, setEmail] = useState(developmentBuild ? 'demo@picturejournal.local' : '');
+  const [displayName, setDisplayName] = useState(developmentBuild ? 'Picture Keeper' : '');
+  const [password, setPassword] = useState(developmentBuild ? 'password123' : '');
   const [folders, setFolders] = useState<Folder[]>([]);
-  const [folder, setFolder] = useState<Folder | null>(null);
   const [selectedDiaryFolderId, setSelectedDiaryFolderId] = useState<string | null>(null);
   const [selectedPlacesFolderId, setSelectedPlacesFolderId] = useState<string | null>(null);
-  const diaryFolder =
-    folders.find((item) => item.folderId === selectedDiaryFolderId && item.type === 'PHOTO_DIARY') ??
-    folders.find((item) => item.type === 'PHOTO_DIARY') ??
-    null;
-  const placesFolder =
-    folders.find((item) => item.folderId === selectedPlacesFolderId && item.type === 'REELS_PLACE') ??
-    folders.find((item) => item.type === 'REELS_PLACE') ??
-    null;
+  const diaryFolder = folders.find((item) => item.folderId === selectedDiaryFolderId && item.type === 'PHOTO_DIARY') ?? null;
+  const placesFolder = folders.find((item) => item.folderId === selectedPlacesFolderId && item.type === 'REELS_PLACE') ?? null;
   const [entries, setEntries] = useState<DiaryEntry[]>([]);
   const [selectedEntry, setSelectedEntry] = useState<DiaryEntry | null>(null);
   const [places, setPlaces] = useState<SavedPlace[]>([]);
@@ -167,14 +465,25 @@ export default function App() {
   const [selectedIntake, setSelectedIntake] = useState<ShareIntake | null>(null);
   const [pendingShares, setPendingShares] = useState<PendingSharePayload[]>([]);
   const pendingSharesRef = useRef<PendingSharePayload[]>([]);
+  const pendingShareReceiptsRef = useRef<Record<string, string>>({});
+  const pendingShareMutationRef = useRef<Promise<void>>(Promise.resolve());
+  const capturedIntentKeysRef = useRef(new Set<string>());
+  const resetShareIntentRef = useRef(resetShareIntent);
+  const mutationInFlightRef = useRef(false);
+  const sessionRef = useRef<Session | null>(null);
+  const sessionEpochRef = useRef(0);
+  const replayAbortRef = useRef<AbortController | null>(null);
   const [status, setStatus] = useState('Secure session restore pending.');
+  const [restoreRetryAvailable, setRestoreRetryAvailable] = useState(false);
+  const [restoringSession, setRestoringSession] = useState(true);
   const [busy, setBusy] = useState(false);
   const [draftTitle, setDraftTitle] = useState('A clear memory from today');
   const [draftBody, setDraftBody] = useState('What happened, who was there, and why this photo matters.');
   const [draftTags, setDraftTags] = useState('family, weekend');
   const [draftPlace, setDraftPlace] = useState('Pinned location');
-  const [draftLat, setDraftLat] = useState('37.5665');
-  const [draftLng, setDraftLng] = useState('126.9780');
+  const [draftLat, setDraftLat] = useState('');
+  const [draftLng, setDraftLng] = useState('');
+  const [coordinateProvenance, setCoordinateProvenance] = useState<CoordinateProvenance | null>(null);
   const [photo, setPhoto] = useState<PickedPhoto | null>(null);
   const [repairName, setRepairName] = useState('');
   const [repairAddress, setRepairAddress] = useState('');
@@ -183,41 +492,165 @@ export default function App() {
   const [repairLng, setRepairLng] = useState('');
   const [repairCategory, setRepairCategory] = useState('saved');
 
-  const authHeaders = useMemo(() => {
-    const headers = new Headers();
-    if (session) headers.set('Authorization', `Bearer ${session.token}`);
-    return headers;
+  const resetAccountState = useCallback(() => {
+    sessionRef.current = null;
+    setSession(null);
+    setMode('login');
+    setEmail('');
+    setDisplayName('');
+    setPassword('');
+    setFolders([]);
+    setSelectedDiaryFolderId(null);
+    setSelectedPlacesFolderId(null);
+    setEntries([]);
+    setSelectedEntry(null);
+    setPlaces([]);
+    setSelectedPlace(null);
+    setUnresolved([]);
+    setSelectedIntake(null);
+    setDraftTitle('');
+    setDraftBody('');
+    setDraftTags('');
+    setDraftPlace('');
+    setDraftLat('');
+    setDraftLng('');
+    setCoordinateProvenance(null);
+    setPhoto(null);
+    setRepairName('');
+    setRepairAddress('');
+    setRepairRegion('');
+    setRepairLat('');
+    setRepairLng('');
+    setRepairCategory('saved');
+    setRestoreRetryAvailable(false);
+    setRestoringSession(false);
+    setScreen('auth');
+  }, []);
+
+  useEffect(() => {
+    resetShareIntentRef.current = resetShareIntent;
+  }, [resetShareIntent]);
+
+  useEffect(() => {
+    sessionRef.current = session;
   }, [session]);
 
   const api = useCallback(
     async <T,>(path: string, options: RequestInit = {}): Promise<T> => {
+      const requestSession = sessionRef.current;
+      const requestEpoch = sessionEpochRef.current;
       const headers = new Headers(options.headers);
       if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
-      if (session) headers.set('Authorization', `Bearer ${session.token}`);
+      if (requestSession) headers.set('Authorization', `Bearer ${requestSession.token}`);
       const response = await fetch(`${apiBaseUrl}${path}`, { ...options, headers });
       if (!response.ok) {
         const message = await response.text();
-        throw new Error(`${response.status} ${message || response.statusText}`);
+        if (
+          requestSession
+          && (response.status === 401 || response.status === 403)
+          && shouldInvalidateSession(
+            { epoch: requestEpoch, token: requestSession.token, userId: requestSession.user.userId },
+            sessionRef.current,
+            sessionEpochRef.current,
+          )
+        ) {
+          sessionEpochRef.current += 1;
+          replayAbortRef.current?.abort();
+          resetAccountState();
+          await Promise.allSettled([
+            secureDelete(sessionKey),
+            secureDelete(diaryFolderKey),
+            secureDelete(placesFolderKey),
+          ]);
+          setStatus('Session expired. Sign in again; queued shares are retained.');
+        }
+        throw new ApiError(response.status, `${response.status} ${message || response.statusText}`);
+      }
+      if (
+        requestSession
+        && !isSessionOperationCurrent(
+          { epoch: requestEpoch, token: requestSession.token, userId: requestSession.user.userId },
+          sessionRef.current,
+          sessionEpochRef.current,
+        )
+      ) {
+        const stale = new Error('Stale session response ignored.');
+        stale.name = 'AbortError';
+        throw stale;
       }
       if (response.status === 204) return undefined as T;
-      return (await response.json()) as T;
+      const result = (await response.json()) as T;
+      if (
+        requestSession
+        && !isSessionOperationCurrent(
+          { epoch: requestEpoch, token: requestSession.token, userId: requestSession.user.userId },
+          sessionRef.current,
+          sessionEpochRef.current,
+        )
+      ) {
+        const stale = new Error('Stale session response ignored.');
+        stale.name = 'AbortError';
+        throw stale;
+      }
+      return result;
     },
-    [session],
+    [resetAccountState],
   );
 
-  const persistPendingShares = useCallback(async (items: PendingSharePayload[]) => {
-    const fresh = items.filter((item) => Date.now() - item.receivedAt < pendingShareTtlMs);
-    pendingSharesRef.current = fresh;
-    setPendingShares(fresh);
-    await secureSet(pendingShareKey, JSON.stringify(fresh));
+  const updatePendingShares = useCallback(async (
+    update: (current: PendingSharePayload[]) => PendingSharePayload[],
+    updateReceipts: (current: Record<string, string>) => Record<string, string> = (current) => current,
+  ) => {
+    const commit = async () => {
+      const items = updatePendingShareQueue(pendingSharesRef.current, update);
+      const receipts = updateReceipts(pendingShareReceiptsRef.current);
+      if (
+        JSON.stringify(items) === JSON.stringify(pendingSharesRef.current)
+        && JSON.stringify(receipts) === JSON.stringify(pendingShareReceiptsRef.current)
+      ) return;
+      await secureSetChunked(pendingShareKey, JSON.stringify(items), receipts);
+      pendingSharesRef.current = items;
+      pendingShareReceiptsRef.current = receipts;
+      setPendingShares(items);
+    };
+    const next = pendingShareMutationRef.current.then(commit, commit);
+    pendingShareMutationRef.current = next.catch(() => undefined);
+    await next;
   }, []);
+
+  const enqueuePendingShare = useCallback(async (item: PendingSharePayload, deliveryId?: string): Promise<boolean> => {
+    let added = false;
+    let deliveryResult: ReturnType<typeof applyPendingShareDelivery> | undefined;
+    await updatePendingShares(
+      (current) => {
+        if (!deliveryId) {
+          added = true;
+          return [...current, item];
+        }
+        const result = applyPendingShareDelivery(current, pendingShareReceiptsRef.current, deliveryId, item);
+        deliveryResult = result;
+        added = result.added;
+        return result.items;
+      },
+      (receipts) => deliveryId
+        ? (deliveryResult ?? applyPendingShareDelivery(pendingSharesRef.current, receipts, deliveryId, item)).receipts
+        : receipts,
+    );
+    return added;
+  }, [updatePendingShares]);
+
+  const clearNativeReceipt = useCallback(async (deliveryId: string) => {
+    await updatePendingShares((current) => current, (receipts) => {
+      const { [deliveryId]: _, ...remaining } = receipts;
+      return remaining;
+    });
+  }, [updatePendingShares]);
 
   const refreshFolders = useCallback(async () => {
     const data = await api<Folder[]>('/api/v1/folders');
     setFolders(data);
-    if (!folder && data.length > 0) setFolder(data[0]);
     return data;
-  }, [api, folder]);
+  }, [api]);
 
   const refreshDiary = useCallback(async () => {
     if (!diaryFolder) return;
@@ -235,134 +668,240 @@ export default function App() {
 
   const refreshUnresolved = useCallback(async () => {
     if (!session || !placesFolder) return;
-    const unresolvedItems: ShareIntake[] = [];
-    const serverItems = await api<ShareIntake[]>(`/api/v1/folders/${placesFolder.folderId}/share-intake/unresolved`);
-    unresolvedItems.push(...serverItems);
+    const epoch = sessionEpochRef.current;
+    replayAbortRef.current?.abort();
+    const controller = new AbortController();
+    replayAbortRef.current = controller;
+    const isCurrent = () =>
+      !controller.signal.aborted
+      && sessionEpochRef.current === epoch
+      && sessionRef.current?.user.userId === session.user.userId;
+    const serverItems = await api<ShareIntake[]>(
+      `/api/v1/folders/${placesFolder.folderId}/share-intake/unresolved`,
+      { signal: controller.signal },
+    );
+    if (!isCurrent()) return;
+    const snapshot = pendingSharesRef.current;
     const remaining: PendingSharePayload[] = [];
-    for (const pending of pendingShares) {
-      if (pending.userId && pending.userId !== session.user.userId) continue;
-      if (pending.intendedFolderId && pending.intendedFolderId !== placesFolder.folderId) {
+    for (const pending of snapshot) {
+      if (pending.userId !== session.user.userId || pending.intendedFolderId !== placesFolder.folderId) {
         remaining.push(pending);
         continue;
       }
-      const share = { ...pending, userId: session.user.userId, intendedFolderId: placesFolder.folderId };
+      if (pending.retryState === 'validation' || pending.retryState === 'conflict' || pending.retryState === 'auth') {
+        remaining.push(pending);
+        continue;
+      }
       try {
         const intake = await api<ShareIntake>('/api/v1/share-intake', {
           method: 'POST',
+          signal: controller.signal,
           body: JSON.stringify({
             folderId: placesFolder.folderId,
-            clientIntakeId: share.clientIntakeId,
-            contentFingerprint: share.contentFingerprint,
-            rawUrl: share.rawUrl,
-            rawTitle: share.rawTitle,
-            rawText: share.rawText,
-            sourceApp: share.sourceApp,
-            platform: share.platform,
-            receivedVia: share.receivedVia,
+            clientIntakeId: pending.clientIntakeId,
+            contentFingerprint: pending.contentFingerprint,
+            rawUrl: pending.rawUrl,
+            rawTitle: pending.rawTitle,
+            rawText: pending.rawText,
+            sourceApp: pending.sourceApp,
+            platform: pending.platform,
+            receivedVia: pending.receivedVia,
           }),
         });
+        if (!isCurrent()) return;
         if (intake.status === 'RESOLVED' && intake.resolvedPlace) setSelectedPlace(intake.resolvedPlace);
-        if (intake.status !== 'RESOLVED') unresolvedItems.push(intake);
-      } catch {
-        remaining.push(share);
-        unresolvedItems.push({
-          intakeId: share.clientIntakeId,
-          folderId: placesFolder.folderId,
-          rawUrl: share.rawUrl,
-          rawTitle: share.rawTitle,
-          rawText: share.rawText,
-          status: 'LOCAL_PENDING',
-          failureReason: 'Server intake failed; kept for manual repair.',
-          candidates: [],
-        });
+      } catch (error) {
+        if (controller.signal.aborted || !isCurrent()) return;
+        const message = error instanceof Error ? error.message : 'Share intake failed.';
+        const statusCode = error instanceof ApiError ? error.status : undefined;
+        remaining.push({ ...pending, lastError: message, retryState: classifyShareRetry(statusCode) });
       }
     }
-    if (remaining.length !== pendingShares.length) await persistPendingShares(remaining);
-    const merged = Array.from(new Map(unresolvedItems.map((item) => [item.intakeId, item])).values());
-    setUnresolved(merged);
-    setSelectedIntake((current) => current ?? merged[0] ?? null);
-  }, [api, pendingShares, persistPendingShares, placesFolder, session]);
+    if (!isCurrent()) return;
+    const processedIds = new Set(snapshot.map((item) => item.clientIntakeId));
+    await updatePendingShares((current) => [
+      ...current.filter((item) => !processedIds.has(item.clientIntakeId)),
+      ...remaining,
+    ]);
+    if (!isCurrent()) return;
+    setUnresolved(serverItems);
+    setSelectedIntake((current) => {
+      const retained = current ? serverItems.find((item) => item.intakeId === current.intakeId) : null;
+      if (retained) return retained;
+      setRepairName('');
+      setRepairAddress('');
+      setRepairRegion('');
+      setRepairLat('');
+      setRepairLng('');
+      return serverItems[0] ?? null;
+    });
+    const localPending = remaining.filter((item) => item.intendedFolderId === placesFolder.folderId).length;
+    if (localPending) {
+      const blocked = remaining.filter((item) => item.retryState === 'validation' || item.retryState === 'conflict');
+      setStatus(blocked.length
+        ? `${blocked.length} share payload${blocked.length === 1 ? '' : 's'} need manual remediation: ${blocked.map((item) => item.lastError).join(' ')}`
+        : `${localPending} local share payload${localPending === 1 ? '' : 's'} retained for an explicit retry.`);
+    }
+  }, [api, placesFolder, session, updatePendingShares]);
+
+  const restoreSession = useCallback(async () => {
+    const restoreEpoch = sessionEpochRef.current;
+    const isCurrent = () => sessionEpochRef.current === restoreEpoch && sessionRef.current === null;
+    const queueRestoreState: { error?: string } = {};
+    const [storedSession, storedShares, storedDiaryFolderId, storedPlacesFolderId] = await Promise.all([
+      secureGet(sessionKey),
+      secureGetChunked(pendingShareKey).catch((error: Error) => {
+        queueRestoreState.error = error.message;
+        return null;
+      }),
+      secureGet(diaryFolderKey),
+      secureGet(placesFolderKey),
+    ]);
+    if (!isCurrent()) return;
+    if (storedShares) {
+      const parsedShares = parsePendingShares(storedShares.value);
+      await updatePendingShares(
+        (current) => [...parsedShares, ...current],
+        (receipts) => ({ ...storedShares.metadata.receipts, ...receipts }),
+      );
+      if (!isCurrent()) return;
+    }
+    setSelectedDiaryFolderId(storedDiaryFolderId);
+    setSelectedPlacesFolderId(storedPlacesFolderId);
+    if (!storedSession) {
+      setRestoreRetryAvailable(false);
+      setStatus(queueRestoreState.error
+        ? `Sign in to continue. Pending share recovery needs manual attention: ${queueRestoreState.error}`
+        : 'Sign in to continue the securely retained share recovery flow.');
+      return;
+    }
+    let parsed: Session;
+    try {
+      parsed = parseStoredSession(storedSession);
+    } catch {
+      if (!isCurrent()) return;
+      await secureDelete(sessionKey);
+      if (!isCurrent()) return;
+      setRestoreRetryAvailable(false);
+      setStatus('Stored session was invalid. Sign in again; pending share storage was left untouched.');
+      return;
+    }
+    let response: Response;
+    try {
+      response = await fetch(`${apiBaseUrl}/api/v1/auth/me`, { headers: { Authorization: `Bearer ${parsed.token}` } });
+    } catch {
+      if (!isCurrent()) return;
+      setRestoreRetryAvailable(true);
+      setStatus('Session validation is temporarily unavailable. Retry preserves the stored session and queued shares.');
+      return;
+    }
+    if (!isCurrent()) return;
+    const classification = classifyAuthResponse(response.ok ? 200 : response.status);
+    if (classification === 'reauthenticate') {
+      await secureDelete(sessionKey);
+      if (!isCurrent()) return;
+      setRestoreRetryAvailable(false);
+      setStatus('Stored session was rejected. Sign in again; queued shares are retained.');
+      return;
+    }
+    if (classification === 'retry') {
+      setRestoreRetryAvailable(true);
+      setStatus(`Session validation is temporarily unavailable (${response.status}). Retry preserves the stored session and queued shares.`);
+      return;
+    }
+    const user = (await response.json()) as UserAccount;
+    if (!isCurrent()) return;
+    const validated = { token: parsed.token, user };
+    await secureSet(sessionKey, JSON.stringify(validated));
+    if (!isCurrent()) return;
+    sessionEpochRef.current += 1;
+    sessionRef.current = validated;
+    setSession(validated);
+    setRestoreRetryAvailable(false);
+    setStatus(queueRestoreState.error
+      ? `Secure session restored. Pending share recovery needs manual attention: ${queueRestoreState.error}`
+      : 'Secure session restored and validated.');
+    setScreen('folders');
+  }, [updatePendingShares]);
 
   useEffect(() => {
-    const restore = async () => {
-      const [storedSession, storedShares, storedDiaryFolderId, storedPlacesFolderId] = await Promise.all([
-        secureGet(sessionKey),
-        secureGet(pendingShareKey),
-        secureGet(diaryFolderKey),
-        secureGet(placesFolderKey),
-      ]);
-      if (storedShares) {
-        const parsedShares = JSON.parse(storedShares) as PendingSharePayload[];
-        await persistPendingShares(parsedShares);
-      }
-      setSelectedDiaryFolderId(storedDiaryFolderId);
-      setSelectedPlacesFolderId(storedPlacesFolderId);
-      if (!storedSession) {
-        setStatus('Sign in or create an account to use the seven-screen MVP.');
-        return;
-      }
-      const parsed = JSON.parse(storedSession) as Session;
-      const response = await fetch(`${apiBaseUrl}/api/v1/auth/me`, {
-        headers: { Authorization: `Bearer ${parsed.token}` },
-      });
-      if (!response.ok) {
-        await Promise.all([secureDelete(sessionKey), secureDelete(pendingShareKey)]);
-        setStatus('Stored session expired. Sign in again.');
-        return;
-      }
-      const user = (await response.json()) as UserAccount;
-      const validated = { token: parsed.token, user };
-      setSession(validated);
-      await secureSet(sessionKey, JSON.stringify(validated));
-      setStatus('Secure session restored and validated.');
-      setScreen('folders');
-    };
-    restore().catch((error: Error) => setStatus(error.message));
-  }, [persistPendingShares]);
+    restoreSession()
+      .catch((error: Error) => {
+        setRestoreRetryAvailable(true);
+        setStatus(error.message);
+      })
+      .finally(() => setRestoringSession(false));
+  }, [restoreSession]);
 
   useEffect(() => {
     const captureUrl = async (url: string | null) => {
       if (!url) return;
       const parsed = Linking.parse(url);
-      const item = await createPendingShare({
-        rawUrl: text(parsed.queryParams?.url),
-        rawTitle: text(parsed.queryParams?.title),
-        rawText: text(parsed.queryParams?.text),
-        sourceApp: 'deep-link',
-        platform: Platform.OS,
-        receivedVia: Platform.OS === 'web' ? 'web_deeplink' : 'native_share',
-      });
-      await persistPendingShares([...pendingSharesRef.current, item]);
-      console.info('PICTUREJOURNAL_SHARE_RECEIVED', item.clientIntakeId);
-      setStatus('Share captured locally. Trusted normal share auto-save will run after auth and folder selection.');
-      setScreen('placesList');
+      const rawUrl = text(parsed.queryParams?.url);
+      const rawTitle = text(parsed.queryParams?.title);
+      const rawText = text(parsed.queryParams?.text);
+      if (text(parsed.queryParams?.dataUrl) || (!rawUrl && !rawTitle && !rawText)) return;
+      const intentKey = `link:${await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, url)}`;
+      if (capturedIntentKeysRef.current.has(intentKey)) return;
+      capturedIntentKeysRef.current.add(intentKey);
+      try {
+        const item = scopePendingShare(
+          await createPendingShare({ rawUrl, rawTitle, rawText, sourceApp: 'deep-link', platform: Platform.OS, receivedVia: 'web_deeplink' }),
+          session?.user.userId,
+          placesFolder?.folderId,
+        );
+        await enqueuePendingShare(item);
+        setStatus('Share captured locally. It will be saved after authentication and explicit folder binding.');
+        setScreen(session ? 'placesList' : 'auth');
+      } finally {
+        capturedIntentKeysRef.current.delete(intentKey);
+      }
     };
-    Linking.getInitialURL().then(captureUrl);
-    const subscription = Linking.addEventListener('url', (event) => captureUrl(event.url));
+    Linking.getInitialURL().then(captureUrl).catch((error: Error) => setStatus(error.message));
+    const subscription = Linking.addEventListener('url', (event) => captureUrl(event.url).catch((error: Error) => setStatus(error.message)));
     return () => subscription.remove();
-  }, [persistPendingShares]);
+  }, [enqueuePendingShare, placesFolder, session]);
 
   useEffect(() => {
     if (shareIntentError) setStatus(`Native share error: ${shareIntentError}`);
     if (!hasShareIntent) return;
     const captureNativeShare = async () => {
-      const item = await createPendingShare({
-        rawUrl: shareIntent.webUrl ?? '',
-        rawTitle: shareIntent.meta?.title ?? '',
-        rawText: shareIntent.text ?? '',
-        sourceApp: 'native-share-sheet',
-        platform: Platform.OS,
-        receivedVia: 'native_share',
-      });
-      await persistPendingShares([...pendingSharesRef.current, item]);
-      resetShareIntent(true);
-      console.info('PICTUREJOURNAL_SHARE_RECEIVED', item.clientIntakeId);
-      setStatus('Native share captured locally for automatic save after auth and folder binding.');
-      setScreen('placesList');
+      const rawUrl = shareIntent.webUrl ?? '';
+      const rawTitle = shareIntent.meta?.title ?? '';
+      const rawText = shareIntent.text ?? '';
+      if (!rawUrl && !rawTitle && !rawText) return;
+      const deliveryId = `native:${await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        lengthPrefixed([rawUrl, rawTitle, rawText]),
+      )}`;
+      if (capturedIntentKeysRef.current.has(deliveryId)) return;
+      capturedIntentKeysRef.current.add(deliveryId);
+      try {
+        const item = scopePendingShare(
+          await createPendingShare({ rawUrl, rawTitle, rawText, sourceApp: 'native-share-sheet', platform: Platform.OS, receivedVia: 'native_share' }),
+          session?.user.userId,
+          placesFolder?.folderId,
+        );
+        await enqueuePendingShare(item, deliveryId);
+        resetShareIntentRef.current(true);
+        await clearNativeReceipt(deliveryId);
+        if (__DEV__) console.info('PICTUREJOURNAL_SHARE_RECEIVED', item.clientIntakeId);
+        capturedIntentKeysRef.current.delete(deliveryId);
+        setStatus('Native share captured locally for automatic save after authentication and folder binding.');
+        setScreen(session ? 'placesList' : 'auth');
+      } catch (error) {
+        capturedIntentKeysRef.current.delete(deliveryId);
+        throw error;
+      }
     };
     captureNativeShare().catch((error: Error) => setStatus(error.message));
-  }, [hasShareIntent, persistPendingShares, resetShareIntent, shareIntent, shareIntentError]);
+  }, [clearNativeReceipt, enqueuePendingShare, hasShareIntent, placesFolder, session, shareIntent, shareIntentError]);
 
+
+  useEffect(() => {
+    if (hasShareIntent || Object.keys(pendingShareReceiptsRef.current).length === 0) return;
+    updatePendingShares((current) => current, () => ({})).catch((error: Error) => setStatus(error.message));
+  }, [hasShareIntent, pendingShares, updatePendingShares]);
   useEffect(() => {
     if (!session) return;
     refreshFolders().catch((error: Error) => setStatus(error.message));
@@ -370,10 +909,14 @@ export default function App() {
 
   useEffect(() => {
     if (!diaryFolder && !placesFolder) return;
-    Promise.all([refreshDiary(), refreshPlaces(), refreshUnresolved()]).catch((error: Error) => setStatus(error.message));
+    Promise.all([refreshDiary(), refreshPlaces(), refreshUnresolved()]).catch((error: Error) => {
+      if (error.name !== 'AbortError') setStatus(error.message);
+    });
   }, [diaryFolder, placesFolder, refreshDiary, refreshPlaces, refreshUnresolved]);
 
   const run = async (label: string, action: () => Promise<void>) => {
+    if (mutationInFlightRef.current) return;
+    mutationInFlightRef.current = true;
     setBusy(true);
     setStatus(label);
     try {
@@ -381,44 +924,91 @@ export default function App() {
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Unexpected error');
     } finally {
+      mutationInFlightRef.current = false;
       setBusy(false);
     }
   };
+
+  const discardLocalPendingShare = (clientIntakeId: string) =>
+    run('Discarding blocked local share payload.', async () => {
+      await updatePendingShares((current) => current.filter((item) => item.clientIntakeId !== clientIntakeId));
+      setStatus('Blocked local share payload discarded.');
+    });
 
   const authenticate = () =>
     run(mode === 'signup' ? 'Creating account.' : 'Signing in.', async () => {
       if (mode === 'signup') await api<UserAccount>('/api/v1/auth/signup', { method: 'POST', body: JSON.stringify({ email, displayName, password }) });
       const next = await api<Session>('/api/v1/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+      try {
+        await secureSet(sessionKey, JSON.stringify(next));
+      } catch (error) {
+        await fetch(`${apiBaseUrl}/api/v1/auth/logout`, { method: 'POST', headers: { Authorization: `Bearer ${next.token}` } }).catch(() => undefined);
+        throw error;
+      }
+      await updatePendingShares((current) => current.map((item) => item.retryState === 'auth' ? { ...item, retryState: 'retryable' } : item));
+      sessionEpochRef.current += 1;
+      sessionRef.current = next;
       setSession(next);
-      await secureSet(sessionKey, JSON.stringify(next));
       setScreen('folders');
       setStatus('Authenticated session securely persisted.');
     });
 
   const logout = () =>
     run('Logging out and purging local pending shares.', async () => {
-      await Promise.all([
+      const endingSession = sessionRef.current;
+      sessionEpochRef.current += 1;
+      replayAbortRef.current?.abort();
+      resetAccountState();
+      setPendingShares([]);
+      pendingSharesRef.current = [];
+      pendingShareReceiptsRef.current = {};
+      await pendingShareMutationRef.current.catch(() => undefined);
+      const cleanupResults = await Promise.allSettled([
         secureDelete(sessionKey),
-        secureDelete(pendingShareKey),
+        secureDeleteChunked(pendingShareKey),
         secureDelete(diaryFolderKey),
         secureDelete(placesFolderKey),
       ]);
+      const cleanupFailures = cleanupResults.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       setPendingShares([]);
       pendingSharesRef.current = [];
+      pendingShareReceiptsRef.current = {};
       setUnresolved([]);
-      let warning: string | null = null;
-      try {
-        await api<void>('/api/v1/auth/logout', { method: 'POST' });
-      } catch (error) {
-        warning = error instanceof Error ? error.message : 'Backend logout failed';
+      let warning: string | null = cleanupFailures.length
+        ? `Local cleanup warning: ${cleanupFailures.map((result) => result.reason instanceof Error ? result.reason.message : 'storage cleanup failed').join(' ')}`
+        : null;
+      if (endingSession) {
+        try {
+          const response = await fetch(`${apiBaseUrl}/api/v1/auth/logout`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${endingSession.token}` },
+          });
+          if (!response.ok) throw new Error(`${response.status} ${await response.text() || response.statusText}`);
+        } catch (error) {
+          warning = `${warning ? `${warning} ` : ''}${error instanceof Error ? error.message : 'Backend logout failed'}`;
+        }
       }
-      setSession(null);
-      setFolder(null);
-      setSelectedDiaryFolderId(null);
-      setSelectedPlacesFolderId(null);
-      setScreen('auth');
       setStatus(warning ? `Local data purged; backend logout warning: ${warning}` : 'Logged out. Session and local pending share payloads purged.');
     });
+
+  const bindPendingShareToFolder = async (clientIntakeId: string, folderId: string) => {
+    const currentSession = sessionRef.current;
+    if (!currentSession) throw new Error('Sign in before binding shared content to a folder.');
+    const target = pendingSharesRef.current.find((item) => item.clientIntakeId === clientIntakeId);
+    if (!target) throw new Error('Pending share is no longer available.');
+    if (target.userId && target.userId !== currentSession.user.userId) {
+      throw new Error('Pending share belongs to another account.');
+    }
+    if (target.intendedFolderId && target.intendedFolderId !== folderId) {
+      throw new Error('Pending share is already bound to another folder.');
+    }
+    await updatePendingShares((current) => confirmPendingShareOwnership(
+      current,
+      currentSession.user.userId,
+      folderId,
+      clientIntakeId,
+    ));
+  };
 
   const createFolder = (type: 'PHOTO_DIARY' | 'REELS_PLACE') =>
     run(`Creating ${type} folder.`, async () => {
@@ -430,13 +1020,18 @@ export default function App() {
           description: type === 'PHOTO_DIARY' ? 'Photo Diary workspace' : 'Saved Places workspace',
         }),
       });
-      setFolder(created);
       if (type === 'PHOTO_DIARY') {
-        setSelectedDiaryFolderId(created.folderId);
         await secureSet(diaryFolderKey, created.folderId);
+        setSelectedDiaryFolderId(created.folderId);
+        setSelectedEntry(null);
+        setEntries([]);
       } else {
-        setSelectedPlacesFolderId(created.folderId);
         await secureSet(placesFolderKey, created.folderId);
+        setSelectedPlacesFolderId(created.folderId);
+        setSelectedPlace(null);
+        setSelectedIntake(null);
+        setPlaces([]);
+        setUnresolved([]);
       }
       await refreshFolders();
       setStatus(`${type} folder ready.`);
@@ -450,21 +1045,25 @@ export default function App() {
       if (result.canceled || result.assets.length !== 1) throw new Error('Choose exactly one real image.');
       const asset = result.assets[0];
       const exif = (asset.exif ?? {}) as JsonRecord;
-      const latitude = typeof exif.GPSLatitude === 'number' ? exif.GPSLatitude : undefined;
-      const longitude = typeof exif.GPSLongitude === 'number' ? exif.GPSLongitude : undefined;
+      const latitude = normalizeExifCoordinate(exif.GPSLatitude, exif.GPSLatitudeRef, 'S');
+      const longitude = normalizeExifCoordinate(exif.GPSLongitude, exif.GPSLongitudeRef, 'W');
       setPhoto({
         uri: asset.uri,
         name: asset.fileName ?? `photo-${Date.now()}.jpg`,
         mimeType: asset.mimeType ?? 'image/jpeg',
         latitude,
         longitude,
-        takenAt: text(exif.DateTimeOriginal) || undefined,
+        takenAt: normalizeExifTakenAt(exif.DateTimeOriginal),
       });
       if (latitude !== undefined && longitude !== undefined) {
         setDraftLat(String(latitude));
         setDraftLng(String(longitude));
-        setStatus('EXIF coordinates found. Review before saving.');
+        setCoordinateProvenance('exif');
+        setStatus('Trusted EXIF coordinates found. Review before saving.');
       } else {
+        setDraftLat('');
+        setDraftLng('');
+        setCoordinateProvenance(null);
         setStatus('No trusted EXIF coordinates found. Use current location or enter final coordinates before saving.');
       }
     });
@@ -474,8 +1073,10 @@ export default function App() {
       const permission = await Location.requestForegroundPermissionsAsync();
       if (permission.status !== 'granted') throw new Error('Location permission denied. Enter latitude and longitude manually.');
       const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      if (!Number.isFinite(current.coords.latitude) || !Number.isFinite(current.coords.longitude)) throw new Error('Current location is invalid.');
       setDraftLat(String(current.coords.latitude));
       setDraftLng(String(current.coords.longitude));
+      setCoordinateProvenance('current');
       setStatus('Current coordinates applied.');
     });
 
@@ -483,73 +1084,49 @@ export default function App() {
     run('Uploading one photo and saving diary entry.', async () => {
       if (!diaryFolder) throw new Error('Create or select a Photo Diary folder first.');
       if (!photo) throw new Error('Photo Diary requires exactly one real image.');
-      const latitude = Number(draftLat);
-      const longitude = Number(draftLng);
-      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) throw new Error('Final latitude and longitude are required before saving.');
+      const latitude = parseCoordinate(draftLat, 'latitude');
+      const longitude = parseCoordinate(draftLng, 'longitude');
+      if (!coordinateProvenance) throw new Error('Choose trusted EXIF, current location, or enter coordinates manually before saving.');
       const form = new FormData();
-      form.append('file', { uri: photo.uri, name: photo.name, type: photo.mimeType } as unknown as Blob);
+      if (Platform.OS === 'web') {
+        const response = await fetch(photo.uri);
+        if (!response.ok) throw new Error(`Could not read the selected browser image (${response.status}).`);
+        form.append('file', await response.blob(), photo.name);
+      } else {
+        form.append('file', { uri: photo.uri, name: photo.name, type: photo.mimeType } as unknown as Blob);
+      }
       form.append('intendedFolderId', diaryFolder.folderId);
-      const media = await api<MediaAsset>('/api/v1/media/direct-upload', { method: 'POST', headers: authHeaders, body: form });
-      const created = await api<DiaryEntry>(`/api/v1/folders/${diaryFolder.folderId}/diary-entries`, {
-        method: 'POST',
-        body: JSON.stringify({
-          mediaId: media.mediaId,
-          title: draftTitle,
-          body: draftBody,
-          placeName: draftPlace,
-          latitude,
-          longitude,
-          capturedAt: media.takenAt ?? photo.takenAt ?? new Date().toISOString(),
-          tags: draftTags.split(',').map((tag) => tag.trim()).filter(Boolean),
-        }),
-      });
+      const media = await api<MediaAsset>('/api/v1/media/direct-upload', { method: 'POST', body: form });
+      let created: DiaryEntry;
+      try {
+        created = await api<DiaryEntry>(`/api/v1/folders/${diaryFolder.folderId}/diary-entries`, {
+          method: 'POST',
+          body: JSON.stringify({
+            mediaId: media.mediaId,
+            title: draftTitle,
+            body: draftBody,
+            placeName: draftPlace,
+            latitude,
+            longitude,
+            capturedAt: media.takenAt ?? photo.takenAt ?? new Date().toISOString(),
+            tags: draftTags.split(',').map((tag) => tag.trim()).filter(Boolean),
+          }),
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : 'Unknown diary save failure.';
+        throw new Error(`Media ${media.mediaId} was uploaded but the diary entry was not created. Retry with a new upload or remove the orphan on the server. ${detail}`);
+      }
       await refreshDiary();
       setSelectedEntry(created);
       setScreen('diaryDetail');
-      setStatus('Photo Diary entry saved through media upload and re-query.');
-    });
-
-  const autoSaveNormalShare = () =>
-    run('Auto-saving trusted share without confirmation.', async () => {
-      if (!placesFolder) throw new Error('Create or select a Saved Places folder first.');
-      const share = await createPendingShare({
-        rawUrl: 'https://maps.example/place/cafe-onion',
-        rawTitle: 'Cafe Onion Anguk',
-        rawText: 'Cafe Onion Anguk, Seoul',
-        sourceApp: 'manual-native-share',
-        platform: Platform.OS,
-        receivedVia: 'native_share',
-      });
-      const intake = await api<ShareIntake>('/api/v1/share-intake', {
-        method: 'POST',
-        body: JSON.stringify({
-          folderId: placesFolder.folderId,
-          clientIntakeId: share.clientIntakeId,
-          contentFingerprint: share.contentFingerprint,
-          rawUrl: share.rawUrl,
-          rawTitle: share.rawTitle,
-          rawText: share.rawText,
-          sourceApp: share.sourceApp,
-          platform: share.platform,
-          receivedVia: share.receivedVia,
-        }),
-      });
-      if (intake.resolvedPlace) {
-        setSelectedPlace(intake.resolvedPlace);
-        await refreshPlaces();
-        setScreen('placeDetailInbox');
-        setStatus('Normal share auto-saved. No confirmation UI was shown.');
-      } else {
-        setSelectedIntake(intake);
-        setUnresolved((current) => [intake, ...current.filter((item) => item.intakeId !== intake.intakeId)]);
-        setScreen('placeDetailInbox');
-        setStatus('Share requires repair and was moved to the unresolved inbox.');
-      }
+      setStatus('Photo Diary entry saved.');
     });
 
   const repairUnresolved = () =>
     run('Resolving unresolved share intake with manual repair.', async () => {
-      if (!placesFolder || !selectedIntake) throw new Error('Choose an unresolved intake first.');
+      if (!placesFolder || !selectedIntake) throw new Error('Choose a server unresolved intake first.');
+      const latitude = parseCoordinate(repairLat, 'latitude');
+      const longitude = parseCoordinate(repairLng, 'longitude');
       const resolved = await api<{ intake: ShareIntake; savedPlace: SavedPlace }>(`/api/v1/share-intake/${selectedIntake.intakeId}/resolve`, {
         method: 'POST',
         body: JSON.stringify({
@@ -559,8 +1136,8 @@ export default function App() {
           category: repairCategory,
           address: repairAddress,
           regionText: repairRegion,
-          latitude: Number(repairLat),
-          longitude: Number(repairLng),
+          latitude,
+          longitude,
           summary: 'Manually repaired from unresolved inbox.',
           whyRecommended: selectedIntake.rawText,
           keywords: ['repaired'],
@@ -579,16 +1156,16 @@ export default function App() {
       <StatusBar style="dark" />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.nav} contentContainerStyle={styles.navContent}>
         {screens.map((item) => (
-          <Pressable key={item.key} disabled={navDisabled} onPress={() => setScreen(item.key)} style={[styles.navPill, screen === item.key && styles.navPillActive, item.product === 'Photo Diary' && styles.diaryPill, item.product === 'Saved Places' && styles.placePill]}>
+          <Pressable key={item.key} disabled={item.key !== 'auth' && navDisabled} onPress={() => setScreen(item.key)} style={[styles.navPill, screen === item.key && styles.navPillActive, item.product === 'Photo Diary' && styles.diaryPill, item.product === 'Saved Places' && styles.placePill]}>
             <Text style={[styles.navText, screen === item.key && styles.navTextActive]}>{item.label}</Text>
           </Pressable>
         ))}
       </ScrollView>
       <ScrollView contentContainerStyle={styles.container}>
         <View style={styles.header}>
-          <Text style={styles.eyebrow}>PictureJournal mobile MVP</Text>
+          <Text style={styles.eyebrow}>PictureJournal</Text>
           <Text style={styles.title}>{screens.find((item) => item.key === screen)?.label}</Text>
-          <Text style={styles.description}>API: {apiBaseUrl} · {session ? `${session.user.displayName} signed in` : 'signed out'} · Diary: {diaryFolder?.name ?? 'none'} · Places: {placesFolder?.name ?? 'none'}</Text>
+          {developmentBuild && <Text style={styles.description}>API: {apiBaseUrl} · {session ? `${session.user.displayName} signed in` : 'signed out'} · Diary: {diaryFolder?.name ?? 'none'} · Places: {placesFolder?.name ?? 'none'}</Text>}
           <Text style={styles.status}>{busy ? 'Working… ' : ''}{status}</Text>
         </View>
 
@@ -599,7 +1176,22 @@ export default function App() {
             <Field label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" />
             {mode === 'signup' && <Field label="Display name" value={displayName} onChangeText={setDisplayName} />}
             <Field label="Password" value={password} onChangeText={setPassword} secureTextEntry />
-            <Action label={mode === 'signup' ? 'Create account and sign in' : 'Sign in'} onPress={authenticate} />
+            <Action label={mode === 'signup' ? 'Create account and sign in' : 'Sign in'} onPress={authenticate} disabled={busy || restoringSession} />
+            {restoreRetryAvailable && (
+              <Action
+                label="Retry secure session validation"
+                onPress={() => run('Retrying secure session validation.', async () => {
+                  setRestoringSession(true);
+                  try {
+                    await restoreSession();
+                  } finally {
+                    setRestoringSession(false);
+                  }
+                })}
+                secondary
+                disabled={busy || restoringSession}
+              />
+            )}
           </View>
         )}
 
@@ -608,25 +1200,30 @@ export default function App() {
             <Text style={styles.cardTitle}>Folder Select</Text>
             <Text style={styles.description}>All diary, media, share, and place writes stay folder-scoped through the backend policy boundary.</Text>
             <Action label="Refresh folders" onPress={() => run('Refreshing folders.', async () => { await refreshFolders(); })} />
-            {!diaryFolder && <Action label="Create Photo Diary folder" onPress={() => createFolder('PHOTO_DIARY')} secondary />}
-            {!placesFolder && <Action label="Create Saved Places folder" onPress={() => createFolder('REELS_PLACE')} secondary />}
+            {!diaryFolder && <Action label="Create Photo Diary folder" onPress={() => createFolder('PHOTO_DIARY')} secondary disabled={busy} />}
+            {!placesFolder && <Action label="Create Saved Places folder" onPress={() => createFolder('REELS_PLACE')} secondary disabled={busy} />}
             {folders.map((item) => (
-              <Pressable key={item.folderId} onPress={() => {
-                setFolder(item);
+              <Pressable key={item.folderId} disabled={busy} onPress={() => run(`Binding ${item.name}.`, async () => {
                 if (item.type === 'PHOTO_DIARY') {
+                  await secureSet(diaryFolderKey, item.folderId);
                   setSelectedDiaryFolderId(item.folderId);
-                  void secureSet(diaryFolderKey, item.folderId);
-                }
-                if (item.type === 'REELS_PLACE') {
+                  setSelectedEntry(null);
+                  setEntries([]);
+                } else if (item.type === 'REELS_PLACE') {
+                  await secureSet(placesFolderKey, item.folderId);
                   setSelectedPlacesFolderId(item.folderId);
-                  void secureSet(placesFolderKey, item.folderId);
+                  setSelectedPlace(null);
+                  setSelectedIntake(null);
+                  setPlaces([]);
+                  setUnresolved([]);
                 }
-              }} style={[styles.row, (selectedDiaryFolderId === item.folderId || selectedPlacesFolderId === item.folderId) && styles.rowActive]}>
+                setStatus(`${item.name} is the active ${item.type} folder.`);
+              })} style={[styles.row, (selectedDiaryFolderId === item.folderId || selectedPlacesFolderId === item.folderId) && styles.rowActive]}>
                 <Text style={styles.rowTitle}>{item.name}</Text>
                 <Text style={styles.description}>{item.type} · {item.role} · {item.description}</Text>
               </Pressable>
             ))}
-            <Action label="Logout and purge pending shares" onPress={logout} danger />
+            <Action label="Logout and purge pending shares" onPress={logout} danger disabled={busy} />
           </View>
         )}
 
@@ -652,17 +1249,17 @@ export default function App() {
             <Text style={styles.cardTitle}>Photo Diary Composer</Text>
             <Text style={styles.description}>Exactly one real image is required. EXIF is best effort; final coordinates are required before save.</Text>
             {photo && <Image source={{ uri: photo.uri }} style={styles.photo} />}
-            <Action label="Pick exactly one photo" onPress={pickOnePhoto} />
+            <Action label="Pick exactly one photo" onPress={pickOnePhoto} disabled={busy} />
             <Field label="Title" value={draftTitle} onChangeText={setDraftTitle} />
             <Field label="Body" value={draftBody} onChangeText={setDraftBody} multiline />
             <Field label="Tags (comma separated)" value={draftTags} onChangeText={setDraftTags} />
             <Field label="Place label" value={draftPlace} onChangeText={setDraftPlace} />
             <View style={styles.split}>
-              <Field label="Latitude" value={draftLat} onChangeText={setDraftLat} keyboardType="numeric" />
-              <Field label="Longitude" value={draftLng} onChangeText={setDraftLng} keyboardType="numeric" />
+              <Field label="Latitude" value={draftLat} onChangeText={(value) => { setDraftLat(value); setCoordinateProvenance('manual'); }} keyboardType="numeric" />
+              <Field label="Longitude" value={draftLng} onChangeText={(value) => { setDraftLng(value); setCoordinateProvenance('manual'); }} keyboardType="numeric" />
             </View>
-            <Action label="Use current location fallback" onPress={useCurrentLocation} secondary />
-            <Action label="Upload photo and save diary" onPress={createDiaryEntry} />
+            <Action label="Use current location fallback" onPress={useCurrentLocation} secondary disabled={busy} />
+            <Action label="Upload photo and save diary" onPress={createDiaryEntry} disabled={busy} />
           </View>
         )}
 
@@ -676,7 +1273,7 @@ export default function App() {
                 <Text style={styles.description}>{selectedEntry.body}</Text>
                 <Text style={styles.mapBox}>Map coordinate: {selectedEntry.latitude}, {selectedEntry.longitude}</Text>
                 <Text style={styles.description}>Tags: {selectedEntry.tags.join(', ') || 'none'} · Captured {new Date(selectedEntry.capturedAt).toLocaleString()}</Text>
-                <Action label="Re-query this entry" onPress={() => run('Re-querying diary detail.', async () => { setSelectedEntry(await api<DiaryEntry>(`/api/v1/diary-entries/${selectedEntry.entryId}`)); })} />
+                <Action label="Refresh this entry" onPress={() => run('Refreshing diary detail.', async () => { setSelectedEntry(await api<DiaryEntry>(`/api/v1/diary-entries/${selectedEntry.entryId}`)); })} />
               </>
             ) : <Text style={styles.description}>No diary entry selected.</Text>}
           </View>
@@ -685,9 +1282,8 @@ export default function App() {
         {screen === 'placesList' && (
           <View style={[styles.card, styles.placeCard]}>
             <Text style={styles.cardTitle}>Saved Places List</Text>
-            <Text style={styles.description}>Cool utility-first place collection. Normal share auto-save has no confirmation step.</Text>
+            <Text style={styles.description}>Places shared with you are saved automatically when trusted, or held for review when details are uncertain.</Text>
             <Action label="Refresh saved places" onPress={() => run('Refreshing saved places.', refreshPlaces)} />
-            <Action label="Simulate normal share auto-save" onPress={autoSaveNormalShare} secondary />
             {places.map((placeItem) => (
               <Pressable key={placeItem.placeId} onPress={() => { setSelectedPlace(placeItem); setScreen('placeDetailInbox'); }} style={styles.placeItem}>
                 <Text style={styles.rowTitle}>{placeItem.name}</Text>
@@ -708,9 +1304,32 @@ export default function App() {
                 <Text style={styles.description}>{selectedPlace.summary}</Text>
                 <Text style={styles.mapBox}>Place coordinate: {selectedPlace.latitude ?? 'n/a'}, {selectedPlace.longitude ?? 'n/a'}</Text>
               </View>
-            ) : <Text style={styles.description}>Select a saved place from screen 6.</Text>}
+            ) : <Text style={styles.description}>Select a saved place from the list.</Text>}
             <Text style={styles.segmentTitle}>Unresolved inbox</Text>
-            <Action label="Refresh unresolved intake from pending shares" onPress={() => run('Refreshing unresolved inbox.', refreshUnresolved)} secondary />
+            <Action label="Refresh unresolved intake from pending shares" onPress={() => run('Refreshing unresolved inbox.', refreshUnresolved)} secondary disabled={busy} />
+            {pendingShares
+              .filter((item) => (!item.userId || item.userId === session?.user.userId)
+                && (!placesFolder || !item.intendedFolderId || item.intendedFolderId === placesFolder.folderId))
+              .map((item) => (
+                <View key={item.clientIntakeId} style={styles.row}>
+                  <Text style={styles.rowTitle}>{item.rawTitle || item.rawUrl || 'Locally retained share'}</Text>
+                  <Text style={styles.description}>{item.retryState ?? 'retryable'} · {item.lastError ?? 'waiting for automatic retry'}</Text>
+                  {!item.intendedFolderId && placesFolder && (!item.userId || item.userId === session?.user.userId) && (
+                    <Action
+                      label={item.userId ? 'Bind to this folder' : 'Confirm ownership and bind to this folder'}
+                      onPress={() => run(
+                        item.userId ? 'Binding owned share to this folder.' : 'Binding quarantined share after ownership confirmation.',
+                        () => bindPendingShareToFolder(item.clientIntakeId, placesFolder.folderId),
+                      )}
+                      secondary
+                      disabled={busy}
+                    />
+                  )}
+                  {(item.retryState === 'validation' || item.retryState === 'conflict') && (
+                    <Action label="Discard blocked local payload" onPress={() => discardLocalPendingShare(item.clientIntakeId)} danger disabled={busy} />
+                  )}
+                </View>
+              ))}
             {unresolved.map((item) => (
               <Pressable key={item.intakeId} onPress={() => { setSelectedIntake(item); setRepairName(item.rawTitle); }} style={[styles.row, selectedIntake?.intakeId === item.intakeId && styles.rowActive]}>
                 <Text style={styles.rowTitle}>{item.rawTitle || item.rawUrl || 'Untitled share'}</Text>
@@ -725,7 +1344,7 @@ export default function App() {
               <Field label="Latitude" value={repairLat} onChangeText={setRepairLat} keyboardType="numeric" />
               <Field label="Longitude" value={repairLng} onChangeText={setRepairLng} keyboardType="numeric" />
             </View>
-            <Action label="Repair unresolved into saved place" onPress={repairUnresolved} />
+            <Action label="Repair unresolved into saved place" onPress={repairUnresolved} disabled={busy} />
           </View>
         )}
       </ScrollView>
@@ -755,9 +1374,9 @@ function Field(props: ComponentProps<typeof TextInput> & { label: string }) {
   );
 }
 
-function Action({ label, onPress, secondary, danger }: { label: string; onPress: () => void; secondary?: boolean; danger?: boolean }) {
+function Action({ label, onPress, secondary, danger, disabled }: { label: string; onPress: () => void; secondary?: boolean; danger?: boolean; disabled?: boolean }) {
   return (
-    <Pressable onPress={onPress} style={[styles.button, secondary && styles.secondaryButton, danger && styles.dangerButton]} accessibilityRole="button">
+    <Pressable disabled={disabled} onPress={onPress} style={[styles.button, secondary && styles.secondaryButton, danger && styles.dangerButton, disabled && styles.buttonDisabled]} accessibilityRole="button" accessibilityState={{ disabled }}>
       <Text style={[styles.buttonText, secondary && styles.secondaryButtonText]}>{label}</Text>
     </Pressable>
   );
@@ -789,6 +1408,7 @@ const styles = StyleSheet.create({
   multiline: { minHeight: 92, textAlignVertical: 'top' },
   split: { flexDirection: 'row', gap: 10 },
   button: { backgroundColor: '#172033', borderRadius: 999, padding: 14, alignItems: 'center' },
+  buttonDisabled: { opacity: 0.45 },
   secondaryButton: { backgroundColor: '#ffffff', borderColor: '#172033', borderWidth: 1 },
   dangerButton: { backgroundColor: '#b42318' },
   buttonText: { color: '#ffffff', fontWeight: '900' },

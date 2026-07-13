@@ -1,5 +1,7 @@
 package com.picturejournal.share.spike.api;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -15,6 +17,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -128,5 +131,21 @@ class ShareSpikeControllerTests {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"))
                 .andExpect(jsonPath("$.message").value("folder selection requires an authenticated actor."));
+    }
+    @Test
+    void controllerIsEnabledForShareSpikeAndExcludedFromProduction() {
+        contextWithProfiles("share-spike").run(context ->
+                assertEquals(1, context.getBeansOfType(ShareSpikeController.class).size()));
+
+        contextWithProfiles("share-spike", "prod").run(context ->
+                assertTrue(context.getBeansOfType(ShareSpikeController.class).isEmpty()));
+    }
+
+    private ApplicationContextRunner contextWithProfiles(String... profiles) {
+        return new ApplicationContextRunner()
+                .withInitializer(context -> context.getEnvironment().setActiveProfiles(profiles))
+                .withBean(ShareSpikeService.class, () ->
+                        new ShareSpikeService(new FileShareSpikeDraftStore(objectMapper, tempDir.resolve("profile-" + String.join("-", profiles)))))
+                .withUserConfiguration(ShareSpikeController.class);
     }
 }

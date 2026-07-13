@@ -1,10 +1,12 @@
 package com.picturejournal.ops.api;
 
+import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.picturejournal.auth.api.AuthController;
 import com.picturejournal.auth.application.AuthService;
@@ -27,6 +29,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class OperationsControllerTests {
@@ -39,7 +42,7 @@ class OperationsControllerTests {
 
     @BeforeEach
     void setUp() {
-        objectMapper = new ObjectMapper().findAndRegisterModules();
+        objectMapper = new ObjectMapper().findAndRegisterModules().enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
         AuthService authService = new AuthService(
                 new FileUserAccountStore(objectMapper, tempDir.resolve("users")),
                 new FileAuthSessionStore(objectMapper, tempDir.resolve("sessions")));
@@ -55,6 +58,7 @@ class OperationsControllerTests {
                         new CollaborationController(collaborationService, authService),
                         new PlaceController(placeService, authService),
                         new OperationsController(geocodeService, readinessService))
+                .setMessageConverters(new MappingJackson2HttpMessageConverter(objectMapper))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -95,25 +99,59 @@ class OperationsControllerTests {
     void readinessReportsMissingEnvAndUnresolvedDrafts() throws Exception {
         String ownerToken = signupAndLogin("owner@example.com", "Owner");
         String folderId = createFolder(ownerToken, "REELS_PLACE");
-        mockMvc.perform(post("/api/v1/share-intake")
+        String contentFingerprint = "a".repeat(64);
+        MvcResult intakeResult = mockMvc.perform(post("/api/v1/share-intake")
                         .header("Authorization", bearer(ownerToken))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "folderId": "%s",
                                   "clientIntakeId": "ops-readiness-intake",
-                                  "fingerprint": "ops-readiness-no-place",
+                                  "contentFingerprint": "%s",
                                   "rawUrl": "https://instagram.com/reel/no-place",
                                   "sourceApp": "instagram",
                                   "platform": "ios",
                                   "receivedVia": "native_share"
                                 }
-                                """.formatted(folderId)))
-                .andExpect(status().isCreated());
+                                """.formatted(folderId, contentFingerprint)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.contentFingerprint").value(contentFingerprint))
+                .andReturn();
+        String intakeId = objectMapper.readTree(intakeResult.getResponse().getContentAsString()).get("intakeId").asText();
+
+        mockMvc.perform(get("/api/v1/share-intake/{intakeId}", intakeId)
+                        .header("Authorization", bearer(ownerToken)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contentFingerprint").value(contentFingerprint));
+
+        mockMvc.perform(post("/api/v1/share-intake")
+                        .header("Authorization", bearer(ownerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "folderId": "%s",
+                                  "clientIntakeId": "ops-readiness-legacy-fingerprint",
+                                  "fingerprint": "%s",
+                                  "rawUrl": "https://instagram.com/reel/legacy",
+                                  "sourceApp": "instagram",
+                                  "platform": "ios",
+                                  "receivedVia": "native_share"
+                                }
+                                """.formatted(folderId, contentFingerprint)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_ARGUMENT"));
 
         mockMvc.perform(get("/api/v1/ops/readiness"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.requiredHomeServerEnvKeys.length()").value(8))
+                .andExpect(jsonPath("$.requiredHomeServerEnvKeys", containsInAnyOrder(
+                        "DB_URL",
+                        "DB_USERNAME",
+                        "DB_PASSWORD",
+                        "STORAGE_PROVIDER",
+                        "STORAGE_BUCKET",
+                        "STORAGE_ENDPOINT",
+                        "STORAGE_ACCESS_KEY",
+                        "STORAGE_SECRET_KEY")))
                 .andExpect(jsonPath("$.unresolvedShareIntakeCount").value(1));
     }
 

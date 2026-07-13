@@ -21,11 +21,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/v1/auth")
-@ApiResponses({
-        @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class))),
-        @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class))),
-        @ApiResponse(responseCode = "409", description = "Conflict", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
-})
 public class AuthController {
 
     private final AuthService authService;
@@ -36,6 +31,11 @@ public class AuthController {
 
     @PostMapping("/signup")
     @ResponseStatus(HttpStatus.CREATED)
+    @ApiResponses({
+            @ApiResponse(responseCode = "201", description = "Created", content = @Content(schema = @Schema(implementation = UserAccountResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class))),
+            @ApiResponse(responseCode = "409", description = "Conflict", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
+    })
     public UserAccountResponse signup(@RequestBody SignupRequest request) {
         return UserAccountResponse.from(authService.signup(new AuthService.SignupCommand(
                 request.email(),
@@ -44,6 +44,11 @@ public class AuthController {
     }
 
     @PostMapping("/login")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Authenticated", content = @Content(schema = @Schema(implementation = LoginResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class))),
+            @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
+    })
     public LoginResponse login(@RequestBody LoginRequest request) {
         AuthService.AuthenticatedSession authenticatedSession = authService.login(new AuthService.LoginCommand(
                 request.email(),
@@ -53,6 +58,10 @@ public class AuthController {
 
     @GetMapping("/me")
     @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Current user", content = @Content(schema = @Schema(implementation = UserAccountResponse.class))),
+            @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
+    })
     public UserAccountResponse me(HttpServletRequest request) {
         return UserAccountResponse.from(authService.getCurrentUser(request.getHeader("Authorization")));
     }
@@ -60,6 +69,10 @@ public class AuthController {
     @PostMapping("/logout")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @SecurityRequirement(name = "bearerAuth")
+    @ApiResponses({
+            @ApiResponse(responseCode = "204", description = "No Content"),
+            @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content(schema = @Schema(implementation = GlobalExceptionHandler.ErrorResponse.class)))
+    })
     public void logout(HttpServletRequest request) {
         authService.logout(request.getHeader("Authorization"));
     }

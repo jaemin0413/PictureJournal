@@ -2,11 +2,17 @@ package com.picturejournal.auth.application;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
+import java.util.HexFormat;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -31,12 +37,23 @@ public class FileAuthSessionStore implements AuthSessionStore {
 
     @Override
     public synchronized AuthSession save(AuthSession authSession) {
+        Path sessionPath = sessionPathRequired(authSession.token());
         try {
             Files.createDirectories(rootDirectory);
-            objectMapper.writeValue(sessionPathRequired(authSession.token()).toFile(), authSession);
+            objectMapper.writeValue(
+                    sessionPath.toFile(),
+                    new StoredAuthSession(authSession.userId(), authSession.createdAt()));
             return authSession;
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to persist auth session " + authSession.token(), exception);
+            throw new IllegalStateException("Failed to persist auth session.", exception);
+        }
+    }
+    @Override
+    public synchronized void deleteByToken(String token) {
+        try {
+            Files.deleteIfExists(sessionPathRequired(token));
+        } catch (IOException exception) {
+            throw new IllegalStateException("Failed to delete auth session.", exception);
         }
     }
 
@@ -48,9 +65,10 @@ public class FileAuthSessionStore implements AuthSessionStore {
         }
 
         try {
-            return Optional.of(objectMapper.readValue(sessionPath.get().toFile(), AuthSession.class));
+            StoredAuthSession stored = objectMapper.readValue(sessionPath.get().toFile(), StoredAuthSession.class);
+            return Optional.of(new AuthSession(token, stored.userId(), stored.createdAt()));
         } catch (IOException exception) {
-            throw new IllegalStateException("Failed to read auth session " + token, exception);
+            throw new IllegalStateException("Failed to read auth session.", exception);
         }
     }
 
@@ -62,6 +80,17 @@ public class FileAuthSessionStore implements AuthSessionStore {
         if (token == null || !SAFE_TOKEN_PATTERN.matcher(token).matches()) {
             return Optional.empty();
         }
-        return Optional.of(rootDirectory.resolve(token + ".json"));
+        return Optional.of(rootDirectory.resolve(tokenDigest(token) + ".json"));
+    }
+
+    private String tokenDigest(String token) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 is unavailable.", exception);
+        }
+    }
+
+    private record StoredAuthSession(UUID userId, Instant createdAt) {
     }
 }

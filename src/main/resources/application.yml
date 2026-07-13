@@ -16,6 +16,9 @@ spring:
       ddl-auto: validate
     properties:
       jakarta.persistence.validation.mode: none
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: true
 
 app:
   storage:
@@ -24,6 +27,8 @@ app:
     endpoint: ${STORAGE_ENDPOINT:http://localhost:9000}
     access-key: ${STORAGE_ACCESS_KEY:}
     secret-key: ${STORAGE_SECRET_KEY:}
+  media:
+    root: data/media
 
 management:
   endpoints:

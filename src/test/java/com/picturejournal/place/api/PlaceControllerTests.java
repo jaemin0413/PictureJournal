@@ -1,5 +1,6 @@
 package com.picturejournal.place.api;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -19,8 +20,13 @@ import com.picturejournal.collaboration.application.FolderCapabilityPolicyImpl;
 import com.picturejournal.place.application.FilePlaceStore;
 import com.picturejournal.place.application.PlaceService;
 import com.picturejournal.shared.error.GlobalExceptionHandler;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.nio.file.Path;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Executors;
 import org.junit.jupiter.api.BeforeEach;
@@ -68,7 +74,7 @@ class PlaceControllerTests {
         mockMvc.perform(post("/api/v1/share-intake")
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(shareJson(folderId, "client-happy", "Cafe Onion")))
+                        .content(shareJson(folderId, "client-happy", "place: Cafe Onion")))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.clientIntakeId").value("client-happy"))
                 .andExpect(jsonPath("$.status").value("RESOLVED"))
@@ -129,17 +135,34 @@ class PlaceControllerTests {
         String otherToken = signupAndLogin("scope-other@example.com", "Other");
         String folderA = createFolder(ownerToken, "REELS_PLACE");
         String folderB = createFolder(ownerToken, "REELS_PLACE");
-        String otherFolder = createFolder(otherToken, "REELS_PLACE");
+        String inviteToken = objectMapper.readTree(mockMvc.perform(post("/api/v1/folders/{folderId}/invites", folderA)
+                        .header("Authorization", bearer(ownerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"role\":\"EDITOR\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()).get("token").asText();
+        mockMvc.perform(post("/api/v1/invites/{token}/accept", inviteToken)
+                        .header("Authorization", bearer(otherToken)))
+                .andExpect(status().isOk());
 
-        postShare(ownerToken, shareJson(folderA, "same-client-id", "A Cafe"));
-        postShare(ownerToken, shareJson(folderB, "same-client-id", "B Cafe"));
-        postShare(otherToken, shareJson(otherFolder, "same-client-id", "Other Cafe"));
+        JsonNode ownerFolderA = postShare(ownerToken, shareJson(folderA, "same-client-id", "A Cafe"));
+        JsonNode ownerFolderB = postShare(ownerToken, shareJson(folderB, "same-client-id", "B Cafe"));
+        JsonNode otherActorFolderA = postShare(otherToken, shareJson(folderA, "same-client-id", "Other Cafe"));
+        org.assertj.core.api.Assertions.assertThat(ownerFolderA.get("intakeId").asText())
+                .isNotEqualTo(ownerFolderB.get("intakeId").asText())
+                .isNotEqualTo(otherActorFolderA.get("intakeId").asText());
+        org.assertj.core.api.Assertions.assertThat(ownerFolderA.get("resolvedPlaceId").asText())
+                .isNotEqualTo(otherActorFolderA.get("resolvedPlaceId").asText());
+        org.assertj.core.api.Assertions.assertThat(ownerFolderB.get("intakeId").asText())
+                .isNotEqualTo(otherActorFolderA.get("intakeId").asText());
+        org.assertj.core.api.Assertions.assertThat(ownerFolderB.get("resolvedPlaceId").asText())
+                .isNotEqualTo(otherActorFolderA.get("resolvedPlaceId").asText());
 
         mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderA)
                         .header("Authorization", bearer(ownerToken)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.length()").value(1))
-                .andExpect(jsonPath("$[0].name").value("A Cafe"));
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[*].name").value(org.hamcrest.Matchers.containsInAnyOrder("A Cafe", "Other Cafe")));
         mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderB)
                         .header("Authorization", bearer(ownerToken)))
                 .andExpect(status().isOk())
@@ -222,19 +245,23 @@ class PlaceControllerTests {
         String folderId = createFolder(token, "REELS_PLACE");
         JsonNode unresolved = postShare(token, shareJson(folderId, "client-repair", "place: Alpha; place: Beta"));
         String intakeId = unresolved.get("intakeId").asText();
-        String candidateId = unresolved.get("candidates").get(0).get("candidateId").asText();
+        String originalCandidateId = unresolved.get("candidates").get(0).get("candidateId").asText();
 
         mockMvc.perform(get("/api/v1/share-intake/{intakeId}", intakeId)
                         .header("Authorization", bearer(token)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("NEEDS_MANUAL_FIX"));
 
-        mockMvc.perform(patch("/api/v1/share-intake/{intakeId}", intakeId)
+        MvcResult repairedResult = mockMvc.perform(patch("/api/v1/share-intake/{intakeId}", intakeId)
                         .header("Authorization", bearer(token))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(shareJson(folderId, "client-repair", "Repaired Cafe")))
+                        .content("{\"rawTitle\":\"place: Repaired Cafe\"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.rawTitle").value("Repaired Cafe"));
+                .andExpect(jsonPath("$.rawTitle").value("place: Repaired Cafe"))
+                .andReturn();
+        JsonNode repaired = objectMapper.readTree(repairedResult.getResponse().getContentAsString());
+        String candidateId = repaired.get("candidates").get(0).get("candidateId").asText();
+        org.assertj.core.api.Assertions.assertThat(candidateId).isNotEqualTo(originalCandidateId);
 
         mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
                         .header("Authorization", bearer(token))
@@ -245,6 +272,352 @@ class PlaceControllerTests {
                 .andExpect(jsonPath("$.savedPlace.category").value("cafe"));
     }
 
+    @Test
+    void savedPlacePatchPersistsAfterReloadAndIntakeLinkedPlaceCannotBeDeleted() throws Exception {
+        String token = signupAndLogin("saved-place@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+        JsonNode intake = postShare(token, shareJson(folderId, "client-saved-place", "Original Cafe"));
+        String intakeId = intake.get("intakeId").asText();
+        String placeId = intake.get("resolvedPlaceId").asText();
+
+        mockMvc.perform(patch("/api/v1/saved-places/{placeId}", placeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Updated Cafe\",\"category\":\"cafe\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Updated Cafe"));
+
+        mockMvc.perform(get("/api/v1/saved-places/{placeId}", placeId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.name").value("Updated Cafe"))
+                .andExpect(jsonPath("$.category").value("cafe"));
+
+        mockMvc.perform(delete("/api/v1/saved-places/{placeId}", placeId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isConflict());
+
+        mockMvc.perform(get("/api/v1/share-intake/{intakeId}", intakeId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.resolvedPlaceId").value(placeId))
+                .andExpect(jsonPath("$.resolvedPlace.name").value("Updated Cafe"));
+    }
+
+    @Test
+    void viewerCannotRepairShareIntake() throws Exception {
+        String ownerToken = signupAndLogin("repair-owner@example.com", "Owner");
+        String viewerToken = signupAndLogin("repair-viewer@example.com", "Viewer");
+        String folderId = createFolder(ownerToken, "REELS_PLACE");
+        JsonNode unresolved = postShare(ownerToken, shareJson(folderId, "viewer-repair", "place: Alpha; place: Beta"));
+        String intakeId = unresolved.get("intakeId").asText();
+        String candidateId = unresolved.get("candidates").get(0).get("candidateId").asText();
+        String inviteToken = objectMapper.readTree(mockMvc.perform(post("/api/v1/folders/{folderId}/invites", folderId)
+                        .header("Authorization", bearer(ownerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"role\":\"VIEWER\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()).get("token").asText();
+
+        mockMvc.perform(post("/api/v1/invites/{token}/accept", inviteToken)
+                        .header("Authorization", bearer(viewerToken)))
+                .andExpect(status().isOk());
+
+        JsonNode intakeBeforePatch = getJson(ownerToken, "/api/v1/share-intake/" + intakeId);
+        JsonNode placesBeforePatch = getJson(ownerToken, "/api/v1/folders/" + folderId + "/saved-places");
+        mockMvc.perform(patch("/api/v1/share-intake/{intakeId}", intakeId)
+                        .header("Authorization", bearer(viewerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rawTitle\":\"Viewer mutation\"}"))
+                .andExpect(status().isForbidden());
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/share-intake/" + intakeId))
+                .isEqualTo(intakeBeforePatch);
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/folders/" + folderId + "/saved-places"))
+                .isEqualTo(placesBeforePatch);
+
+        JsonNode intakeBeforeResolve = getJson(ownerToken, "/api/v1/share-intake/" + intakeId);
+        JsonNode placesBeforeResolve = getJson(ownerToken, "/api/v1/folders/" + folderId + "/saved-places");
+        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
+                        .header("Authorization", bearer(viewerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"candidateId\":\"" + candidateId + "\"}"))
+                .andExpect(status().isForbidden());
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/share-intake/" + intakeId))
+                .isEqualTo(intakeBeforeResolve);
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/folders/" + folderId + "/saved-places"))
+                .isEqualTo(placesBeforeResolve);
+    }
+    @Test
+    void boundShareIntakeCannotResolveIntoAnotherFolder() throws Exception {
+        String token = signupAndLogin("cross-folder@example.com", "Owner");
+        String sourceFolderId = createFolder(token, "REELS_PLACE");
+        String destinationFolderId = createFolder(token, "REELS_PLACE");
+        String intakeId = postShare(token, shareJson(sourceFolderId, "cross-folder", "place: Alpha; place: Beta"))
+                .get("intakeId").asText();
+
+        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"folderId\":\"" + destinationFolderId + "\",\"manualName\":\"Alpha\"}"))
+                .andExpect(status().isBadRequest());
+    }
+    @Test
+    void resolvedShareIntakeRejectsDifferentResolution() throws Exception {
+        String token = signupAndLogin("terminal-resolution@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+        JsonNode intake = postShare(token, shareJson(folderId, "terminal-resolution", "place: Alpha; place: Beta"));
+        String intakeId = intake.get("intakeId").asText();
+        String firstCandidateId = intake.get("candidates").get(0).get("candidateId").asText();
+        String secondCandidateId = intake.get("candidates").get(1).get("candidateId").asText();
+
+        MvcResult firstResolution = mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"candidateId\":\"" + firstCandidateId + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode resolved = objectMapper.readTree(firstResolution.getResponse().getContentAsString());
+        String resolvedPlaceId = resolved.get("savedPlace").get("placeId").asText();
+        JsonNode intakeBeforeConflict = getJson(token, "/api/v1/share-intake/" + intakeId);
+        JsonNode placesBeforeConflict = getJson(token, "/api/v1/folders/" + folderId + "/saved-places");
+
+        mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"candidateId\":\"" + secondCandidateId + "\"}"))
+                .andExpect(status().isConflict());
+
+        org.assertj.core.api.Assertions.assertThat(getJson(token, "/api/v1/share-intake/" + intakeId))
+                .isEqualTo(intakeBeforeConflict);
+        org.assertj.core.api.Assertions.assertThat(getJson(token, "/api/v1/folders/" + folderId + "/saved-places"))
+                .isEqualTo(placesBeforeConflict);
+        org.assertj.core.api.Assertions.assertThat(intakeBeforeConflict.get("resolvedPlaceId").asText())
+                .isEqualTo(resolvedPlaceId);
+    }
+
+    @Test
+    void shareIntakeRejectsBlankClientIntakeId() throws Exception {
+        String token = signupAndLogin("blank-client-id@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+
+        mockMvc.perform(post("/api/v1/share-intake")
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(shareJson(folderId, "   ", "Cafe")))
+                .andExpect(status().isBadRequest());
+    }
+    @Test
+    void shareIntakeRejectsMissingClientIntakeId() throws Exception {
+        String token = signupAndLogin("missing-client-id@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+
+        mockMvc.perform(post("/api/v1/share-intake")
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "folderId": "%s",
+                                  "rawTitle": "Cafe",
+                                  "sourceApp": "instagram",
+                                  "platform": "ios",
+                                  "receivedVia": "native_share"
+                                }
+                                """.formatted(folderId)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void resolvedShareIntakeCannotBePatched() throws Exception {
+        String token = signupAndLogin("resolved-update@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+        String intakeId = postShare(token, shareJson(folderId, "resolved-update", "Cafe")).get("intakeId").asText();
+
+        mockMvc.perform(patch("/api/v1/share-intake/{intakeId}", intakeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rawTitle\":\"Changed Cafe\"}"))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void savedPlaceFiltersAndUpdateErrorsAreObservable() throws Exception {
+        String token = signupAndLogin("place-filters@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+        String placeId = postShare(token, shareJson(folderId, "filter-place", "Filter Cafe")).get("resolvedPlaceId").asText();
+        String categoryMismatchId = postShare(token, shareJson(folderId, "filter-category", "Bakery")).get("resolvedPlaceId").asText();
+        String statusMismatchId = postShare(token, shareJson(folderId, "filter-status", "Planned Cafe")).get("resolvedPlaceId").asText();
+        String keywordMismatchId = postShare(token, shareJson(folderId, "filter-keyword", "Noisy Cafe")).get("resolvedPlaceId").asText();
+        String regionMismatchId = postShare(token, shareJson(folderId, "filter-region", "Busan Cafe")).get("resolvedPlaceId").asText();
+
+        updatePlace(token, placeId, "cafe", "Seoul", "brunch", "quiet", "VISITED");
+        updatePlace(token, categoryMismatchId, "bakery", "Seoul", "brunch", "quiet", "VISITED");
+        updatePlace(token, statusMismatchId, "cafe", "Seoul", "brunch", "quiet", "WANT_TO_GO");
+        updatePlace(token, keywordMismatchId, "cafe", "Seoul", "brunch", "noisy", "VISITED");
+        updatePlace(token, regionMismatchId, "cafe", "Busan", "brunch", "quiet", "VISITED");
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token))
+                        .queryParam("category", "cafe"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(4))
+                .andExpect(jsonPath("$[*].placeId").value(org.hamcrest.Matchers.containsInAnyOrder(
+                        placeId, statusMismatchId, keywordMismatchId, regionMismatchId)));
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token))
+                        .queryParam("status", "VISITED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(4))
+                .andExpect(jsonPath("$[*].placeId").value(org.hamcrest.Matchers.containsInAnyOrder(
+                        placeId, categoryMismatchId, keywordMismatchId, regionMismatchId)));
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token))
+                        .queryParam("keyword", "quiet"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(4))
+                .andExpect(jsonPath("$[*].placeId").value(org.hamcrest.Matchers.containsInAnyOrder(
+                        placeId, categoryMismatchId, statusMismatchId, regionMismatchId)));
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token))
+                        .queryParam("region", "Seoul"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(4))
+                .andExpect(jsonPath("$[*].placeId").value(org.hamcrest.Matchers.containsInAnyOrder(
+                        placeId, categoryMismatchId, statusMismatchId, keywordMismatchId)));
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token))
+                        .queryParam("category", "cafe")
+                        .queryParam("status", "VISITED")
+                        .queryParam("keyword", "quiet")
+                        .queryParam("region", "Seoul"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].placeId").value(placeId));
+
+        JsonNode placesBeforeMissingPatch = getJson(token, "/api/v1/folders/" + folderId + "/saved-places");
+        mockMvc.perform(patch("/api/v1/saved-places/{placeId}", UUID.randomUUID())
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Missing Cafe\"}"))
+                .andExpect(status().isNotFound());
+        org.assertj.core.api.Assertions.assertThat(getJson(token, "/api/v1/folders/" + folderId + "/saved-places"))
+                .isEqualTo(placesBeforeMissingPatch);
+
+        JsonNode placesBeforeBlankPatch = getJson(token, "/api/v1/folders/" + folderId + "/saved-places");
+        mockMvc.perform(patch("/api/v1/saved-places/{placeId}", placeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"   \"}"))
+                .andExpect(status().isBadRequest());
+        org.assertj.core.api.Assertions.assertThat(getJson(token, "/api/v1/folders/" + folderId + "/saved-places"))
+                .isEqualTo(placesBeforeBlankPatch);
+    }
+
+    @Test
+    void viewerCannotUpdateOrDeleteSavedPlace() throws Exception {
+        String ownerToken = signupAndLogin("place-owner@example.com", "Owner");
+        String viewerToken = signupAndLogin("place-viewer@example.com", "Viewer");
+        String folderId = createFolder(ownerToken, "REELS_PLACE");
+
+        String intakeId = postShare(ownerToken, shareJson(folderId, "viewer-place", "Viewer Cafe")).get("intakeId").asText();
+        String placeId = getJson(ownerToken, "/api/v1/share-intake/" + intakeId).get("resolvedPlaceId").asText();
+        String inviteToken = objectMapper.readTree(mockMvc.perform(post("/api/v1/folders/{folderId}/invites", folderId)
+                        .header("Authorization", bearer(ownerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"role\":\"VIEWER\"}"))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()).get("token").asText();
+        mockMvc.perform(post("/api/v1/invites/{token}/accept", inviteToken)
+                        .header("Authorization", bearer(viewerToken)))
+                .andExpect(status().isOk());
+
+        JsonNode placeBeforePatch = getJson(ownerToken, "/api/v1/saved-places/" + placeId);
+        JsonNode intakeBeforePatch = getJson(ownerToken, "/api/v1/share-intake/" + intakeId);
+        JsonNode placesBeforePatch = getJson(ownerToken, "/api/v1/folders/" + folderId + "/saved-places");
+        mockMvc.perform(patch("/api/v1/saved-places/{placeId}", placeId)
+                        .header("Authorization", bearer(viewerToken))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Viewer mutation\"}"))
+                .andExpect(status().isForbidden());
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/saved-places/" + placeId))
+                .isEqualTo(placeBeforePatch);
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/share-intake/" + intakeId))
+                .isEqualTo(intakeBeforePatch);
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/folders/" + folderId + "/saved-places"))
+                .isEqualTo(placesBeforePatch);
+
+        JsonNode placeBeforeDelete = getJson(ownerToken, "/api/v1/saved-places/" + placeId);
+        JsonNode intakeBeforeDelete = getJson(ownerToken, "/api/v1/share-intake/" + intakeId);
+        JsonNode placesBeforeDelete = getJson(ownerToken, "/api/v1/folders/" + folderId + "/saved-places");
+        mockMvc.perform(delete("/api/v1/saved-places/{placeId}", placeId)
+                        .header("Authorization", bearer(viewerToken)))
+                .andExpect(status().isForbidden());
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/saved-places/" + placeId))
+                .isEqualTo(placeBeforeDelete);
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/share-intake/" + intakeId))
+                .isEqualTo(intakeBeforeDelete);
+        org.assertj.core.api.Assertions.assertThat(getJson(ownerToken, "/api/v1/folders/" + folderId + "/saved-places"))
+                .isEqualTo(placesBeforeDelete);
+    }
+
+    @Test
+    void resolvedShareIntakeResolutionIsIdempotentForSamePlace() throws Exception {
+        String token = signupAndLogin("same-resolution@example.com", "Owner");
+        String folderId = createFolder(token, "REELS_PLACE");
+        JsonNode intake = postShare(token, shareJson(folderId, "same-resolution", "place: Alpha; place: Beta"));
+        String intakeId = intake.get("intakeId").asText();
+        String candidateId = intake.get("candidates").get(0).get("candidateId").asText();
+
+        MvcResult firstResolution = mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"candidateId\":\"" + candidateId + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+        JsonNode first = objectMapper.readTree(firstResolution.getResponse().getContentAsString());
+        String resolvedPlaceId = first.get("savedPlace").get("placeId").asText();
+        String resolvedIntakeId = first.get("intake").get("intakeId").asText();
+
+        MvcResult replayResolution = mockMvc.perform(post("/api/v1/share-intake/{intakeId}/resolve", intakeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"candidateId\":\"" + candidateId + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.intake.status").value("RESOLVED"))
+                .andReturn();
+        JsonNode replay = objectMapper.readTree(replayResolution.getResponse().getContentAsString());
+        org.assertj.core.api.Assertions.assertThat(replay.get("intake").get("intakeId").asText()).isEqualTo(resolvedIntakeId);
+        org.assertj.core.api.Assertions.assertThat(replay.get("savedPlace").get("placeId").asText()).isEqualTo(resolvedPlaceId);
+        org.assertj.core.api.Assertions.assertThat(replay.get("intake").get("resolvedPlaceId").asText()).isEqualTo(resolvedPlaceId);
+
+        mockMvc.perform(get("/api/v1/folders/{folderId}/saved-places", folderId)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].placeId").value(resolvedPlaceId));
+    }
+    private void updatePlace(
+            String token,
+            String placeId,
+            String category,
+            String regionText,
+            String firstKeyword,
+            String secondKeyword,
+            String visitStatus) throws Exception {
+        mockMvc.perform(patch("/api/v1/saved-places/{placeId}", placeId)
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"category":"%s","regionText":"%s","keywords":["%s","%s"],"visitStatus":"%s"}
+                                """.formatted(category, regionText, firstKeyword, secondKeyword, visitStatus)))
+                .andExpect(status().isOk());
+    }
+    private JsonNode getJson(String token, String path) throws Exception {
+        MvcResult result = mockMvc.perform(get(path)
+                        .header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andReturn();
+        return objectMapper.readTree(result.getResponse().getContentAsString());
+    }
     private JsonNode postShare(String token, String payload) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/v1/share-intake")
                         .header("Authorization", bearer(token))
@@ -256,20 +629,9 @@ class PlaceControllerTests {
     }
 
     private String shareJson(String folderId, String clientIntakeId, String title) {
-        return """
-                {
-                  "folderId": "%s",
-                  "clientIntakeId": "%s",
-                  "rawUrl": "https://instagram.com/reel/example",
-                  "rawTitle": "%s",
-                  "sourceApp": "instagram",
-                  "platform": "ios",
-                  "receivedVia": "native_share"
-                }
-                """.formatted(folderId, clientIntakeId, title);
-    }
-
-    private String shareJson(String folderId, String clientIntakeId, String title, String fingerprint) {
+        String trustedTitle = title.regionMatches(true, 0, "place:", 0, "place:".length())
+                ? title
+                : "place: " + title;
         return """
                 {
                   "folderId": "%s",
@@ -281,7 +643,36 @@ class PlaceControllerTests {
                   "receivedVia": "native_share",
                   "contentFingerprint": "%s"
                 }
-                """.formatted(folderId, clientIntakeId, title, fingerprint);
+                """.formatted(folderId, clientIntakeId, trustedTitle, fingerprintForTest(clientIntakeId + "|" + trustedTitle));
+    }
+
+    private String shareJson(String folderId, String clientIntakeId, String title, String fingerprint) {
+        String trustedTitle = title.regionMatches(true, 0, "place:", 0, "place:".length())
+                ? title
+                : "place: " + title;
+        return """
+                {
+                  "folderId": "%s",
+                  "clientIntakeId": "%s",
+                  "rawUrl": "https://instagram.com/reel/example",
+                  "rawTitle": "%s",
+                  "sourceApp": "instagram",
+                  "platform": "ios",
+                  "receivedVia": "native_share",
+                  "contentFingerprint": "%s"
+                }
+                """.formatted(folderId, clientIntakeId, trustedTitle, fingerprintForTest(fingerprint));
+    }
+
+    private String fingerprintForTest(String value) {
+        if (value.matches("[0-9a-fA-F]{64}")) {
+            return value.toLowerCase(java.util.Locale.ROOT);
+        }
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     private String createFolder(String ownerToken, String type) throws Exception {

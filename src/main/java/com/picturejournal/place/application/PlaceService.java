@@ -11,9 +11,6 @@ import com.picturejournal.place.domain.ShareIntakeStatus;
 import com.picturejournal.place.domain.VisitStatus;
 import com.picturejournal.shared.error.DomainException;
 import com.picturejournal.shared.error.ErrorCode;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -62,76 +59,65 @@ public class PlaceService {
             throw invalidArgument("At least one raw share payload field is required.");
         }
         String normalizedUrl = normalizeUrl(rawUrl, rawText);
-        String clientFingerprint = normalizeOptional(command.contentFingerprint());
-        String contentFingerprint = clientFingerprint == null
-                ? fingerprint(rawUrl, rawTitle, rawText, normalizedUrl)
-                : hashCanonical("client\n" + clientFingerprint);
-        ShareIntakeItem existing = findExistingIntake(actorId, folderId, clientIntakeId, contentFingerprint, Instant.now(clock));
-        if (existing != null) {
-            return viewFor(reconcileExistingTerminal(existing));
-        }
+        String contentFingerprint = requireClientFingerprint(command.contentFingerprint());
+        String sourceApp = normalizeRequired(command.sourceApp(), "sourceApp");
+        String platform = normalizeRequired(command.platform(), "platform");
+        String receivedVia = normalizeRequired(command.receivedVia(), "receivedVia");
+        String createIdentity = createIdentity(folderId, actorId, clientIntakeId, rawUrl, rawTitle, rawText, normalizedUrl,
+                contentFingerprint, sourceApp, platform, receivedVia);
         Instant now = Instant.now(clock);
+        ShareIntakeItem existingByClientId = placeStore.findIntakeByCreateReceipt(actorId, folderId, clientIntakeId).orElse(null);
+        if (existingByClientId != null) {
+            String existingIdentity = existingByClientId.clientIntakeId().equals(clientIntakeId)
+                    ? existingByClientId.createIdentity()
+                    : existingByClientId.createReceipts().stream()
+                            .filter(receipt -> clientIntakeId.equals(receipt.clientIntakeId()))
+                            .findFirst()
+                            .orElseThrow()
+                            .createIdentity();
+            if (!createIdentity.equals(existingIdentity)) {
+                throw conflict("clientIntakeId is already used for a different share intake request.");
+            }
+            return viewFor(existingByClientId);
+        }
+        ShareIntakeItem fingerprintDuplicate = findFingerprintDuplicate(actorId, folderId, contentFingerprint, now);
+        if (fingerprintDuplicate != null) {
+            PlaceStore.AggregateRead aggregate = placeStore.saveCreateReceipt(fingerprintDuplicate.intakeId(),
+                    new ShareIntakeItem.CreateReceipt(actorId, folderId, clientIntakeId, createIdentity));
+            return ShareIntakeView.from(aggregate.intake(), aggregate.candidates(), aggregate.resolvedPlace());
+        }
         UUID intakeId = UUID.randomUUID();
         List<PlaceCandidate> candidates = extractCandidates(intakeId, rawTitle, rawText);
-        ShareIntakeStatus status = ShareIntakeStatus.NEEDS_MANUAL_FIX;
         String failureReason = candidates.size() == 1 ? null : unresolvedReason(candidates);
         ShareIntakeItem intake = ShareIntakeItem.create(
-                intakeId,
-                clientIntakeId,
-                folderId,
-                actorId,
-                normalizeRequired(command.sourceApp(), "sourceApp"),
-                normalizeRequired(command.platform(), "platform"),
-                normalizeRequired(command.receivedVia(), "receivedVia"),
-                rawUrl,
-                rawTitle,
-                rawText,
-                normalizedUrl,
-                contentFingerprint,
-                status,
-                failureReason,
-                now);
-        ShareIntakeItem saved = placeStore.saveIntake(intake);
-        candidates.forEach(placeStore::saveCandidate);
-        if (candidates.size() != 1) {
-            return ShareIntakeView.from(saved, candidates, null);
-        }
-        try {
-            SavedPlace place = autoSavePlace(saved, candidates.getFirst(), now);
-            PlaceStore.ResolutionWrite resolution = placeStore.saveResolution(saved.resolve(place.placeId(), now), place);
-            return ShareIntakeView.from(resolution.intake(), candidates, resolution.place());
-        } catch (DomainException exception) {
-            ShareIntakeItem unresolved = placeStore.saveIntake(saved.updateUnresolved(
-                    rawUrl,
-                    rawTitle,
-                    rawText,
-                    normalizedUrl,
-                    "Auto-save failed: " + exception.getMessage(),
-                    Instant.now(clock)));
-            return ShareIntakeView.from(unresolved, candidates, null);
-        }
+                intakeId, clientIntakeId, folderId, actorId, sourceApp, platform, receivedVia, rawUrl, rawTitle, rawText,
+                normalizedUrl, contentFingerprint, createIdentity, failureReason, now);
+        SavedPlace resolvedPlace = candidates.size() == 1 ? autoSavePlace(intake, candidates.getFirst(), now) : null;
+        ShareIntakeItem persistedIntake = resolvedPlace == null
+                ? intake
+                : intake.resolve(resolvedPlace.placeId(), autoResolutionIdentity(candidates.getFirst()), now);
+        PlaceStore.AggregateWrite aggregate = placeStore.saveIntakeAggregate(persistedIntake, candidates, resolvedPlace);
+        return ShareIntakeView.from(aggregate.intake(), aggregate.candidates(), aggregate.resolvedPlace());
     }
 
     public ShareIntakeView getShareIntake(UUID actorId, UUID intakeId) {
-        ShareIntakeItem intake = requireIntake(intakeId);
-        if (intake.folderId() != null) {
-            requireReelsPlaceMember(actorId, intake.folderId());
-        } else if (!intake.receivedByUserId().equals(actorId)) {
-            throw forbidden("Only the receiving actor can read this unbound intake.");
-        }
-        SavedPlace resolvedPlace = intake.resolvedPlaceId() == null ? null : requirePlace(intake.resolvedPlaceId());
-        return ShareIntakeView.from(intake, placeStore.listCandidatesByIntakeId(intakeId), resolvedPlace);
+        PlaceStore.AggregateRead aggregate = placeStore.findAggregateByIntakeId(intakeId)
+                .orElseThrow(() -> new DomainException(ErrorCode.RESOURCE_NOT_FOUND, "Share intake " + intakeId + " was not found."));
+        requireReelsPlaceMember(actorId, aggregate.intake().folderId());
+        return ShareIntakeView.from(aggregate.intake(), aggregate.candidates(), aggregate.resolvedPlace());
     }
     public List<ShareIntakeView> listUnresolvedShareIntakes(UUID actorId, UUID folderId) {
         requireReelsPlaceMember(actorId, folderId);
-        return placeStore.listIntakesByFolderId(folderId).stream()
-                .filter(intake -> intake.status() != ShareIntakeStatus.RESOLVED)
-                .map(this::viewFor)
+        return placeStore.listAggregatesByFolderId(folderId).stream()
+                .filter(aggregate -> aggregate.intake().status() != ShareIntakeStatus.RESOLVED)
+                .map(aggregate -> ShareIntakeView.from(
+                        aggregate.intake(), aggregate.candidates(), aggregate.resolvedPlace()))
                 .toList();
     }
 
-    public synchronized ShareIntakeView updateUnresolvedShareIntake(UUID actorId, UUID intakeId, CreateShareIntakeCommand command) {
-        ShareIntakeItem intake = requireIntakeForWrite(actorId, intakeId);
+    public synchronized ShareIntakeView updateUnresolvedShareIntake(UUID actorId, UUID intakeId, UpdateShareIntakeCommand command) {
+        PlaceStore.AggregateRead current = requireAggregateForWrite(actorId, intakeId);
+        ShareIntakeItem intake = current.intake();
         if (intake.status() == ShareIntakeStatus.RESOLVED) {
             throw conflict("Share intake " + intakeId + " is already resolved.");
         }
@@ -142,28 +128,34 @@ public class PlaceService {
             throw invalidArgument("At least one raw share payload field is required.");
         }
         Instant now = Instant.now(clock);
-        ShareIntakeItem updated = placeStore.saveIntake(intake.updateUnresolved(
-                rawUrl,
-                rawTitle,
-                rawText,
-                normalizeUrl(rawUrl, rawText),
-                "Waiting for repair.",
-                now));
-        return ShareIntakeView.from(updated, placeStore.listCandidatesByIntakeId(intakeId), null);
+        List<PlaceCandidate> candidates = extractCandidates(intakeId, rawTitle, rawText);
+        ShareIntakeItem updated = intake.updateUnresolved(rawUrl, rawTitle, rawText, normalizeUrl(rawUrl, rawText),
+                unresolvedReason(candidates), now);
+        PlaceStore.AggregateWrite aggregate = placeStore.saveIntakeAggregate(updated, candidates, null);
+        return ShareIntakeView.from(aggregate.intake(), aggregate.candidates(), null);
     }
 
 
     public synchronized ResolveShareIntakeResult resolveShareIntake(UUID actorId, UUID intakeId, ResolveShareIntakeCommand command) {
-        ShareIntakeItem intake = requireIntakeForWrite(actorId, intakeId);
-        if (intake.status() == ShareIntakeStatus.RESOLVED) {
-            SavedPlace savedPlace = requirePlace(intake.resolvedPlaceId());
-            return new ResolveShareIntakeResult(viewFor(intake), savedPlace);
+        PlaceStore.AggregateRead current = requireAggregateForWrite(actorId, intakeId);
+        ShareIntakeItem intake = current.intake();
+        if (command.folderId() != null && !intake.folderId().equals(command.folderId())) {
+            throw invalidArgument("A share intake must be resolved in its original folder.");
         }
-        UUID folderId = command.folderId() == null ? intake.folderId() : command.folderId();
-        requireReelsPlaceMember(actorId, requireUuid(folderId, "folderId"));
-        folderCapabilityPolicy.assertCanWriteToFolder(actorId, folderId);
-        List<PlaceCandidate> candidates = placeStore.listCandidatesByIntakeId(intakeId);
+        List<PlaceCandidate> candidates = current.candidates();
         ResolvedPlaceFields fields = resolvePlaceFields(command, candidates);
+        String resolutionIdentity = resolutionIdentity(command, fields);
+        if (intake.status() == ShareIntakeStatus.RESOLVED) {
+            if (!intake.resolutionIdentity().equals(resolutionIdentity)) {
+                throw conflict("Share intake " + intakeId + " is already resolved differently.");
+            }
+            return new ResolveShareIntakeResult(
+                    ShareIntakeView.from(intake, candidates, current.resolvedPlace()),
+                    current.resolvedPlace());
+        }
+        UUID folderId = intake.folderId();
+        requireReelsPlaceMember(actorId, folderId);
+        folderCapabilityPolicy.assertCanWriteToFolder(actorId, folderId);
         Instant now = Instant.now(clock);
         SavedPlace place = new SavedPlace(
                 UUID.randomUUID(),
@@ -183,7 +175,7 @@ public class PlaceService {
                 now,
                 now,
                 now);
-        PlaceStore.ResolutionWrite resolution = placeStore.saveResolution(intake.resolve(place.placeId(), now), place);
+        PlaceStore.ResolutionWrite resolution = placeStore.saveResolution(intake.resolve(place.placeId(), resolutionIdentity, now), place);
         return new ResolveShareIntakeResult(
                 ShareIntakeView.from(resolution.intake(), candidates, resolution.place()),
                 resolution.place());
@@ -226,22 +218,19 @@ public class PlaceService {
         SavedPlace place = requirePlace(placeId);
         requireReelsPlaceMember(actorId, place.folderId());
         folderCapabilityPolicy.assertCanWriteToFolder(actorId, place.folderId());
+        if (place.shareIntakeId() != null) {
+            throw conflict("A saved place created from a share intake cannot be deleted while its intake is retained.");
+        }
         placeStore.deletePlace(placeId);
     }
 
-    private ShareIntakeItem requireIntakeForWrite(UUID actorId, UUID intakeId) {
-        ShareIntakeItem intake = requireIntake(intakeId);
-        if (intake.folderId() != null) {
-            requireReelsPlaceMember(actorId, intake.folderId());
-        } else if (!intake.receivedByUserId().equals(actorId)) {
-            throw forbidden("Only the receiving actor can write this unbound intake.");
-        }
-        return intake;
-    }
-
-    private ShareIntakeItem requireIntake(UUID intakeId) {
-        return placeStore.findIntakeById(intakeId)
-                .orElseThrow(() -> new DomainException(ErrorCode.RESOURCE_NOT_FOUND, "Share intake " + intakeId + " was not found."));
+    private PlaceStore.AggregateRead requireAggregateForWrite(UUID actorId, UUID intakeId) {
+        PlaceStore.AggregateRead aggregate = placeStore.findAggregateByIntakeId(intakeId)
+                .orElseThrow(() -> new DomainException(
+                        ErrorCode.RESOURCE_NOT_FOUND, "Share intake " + intakeId + " was not found."));
+        requireReelsPlaceMember(actorId, aggregate.intake().folderId());
+        folderCapabilityPolicy.assertCanWriteToFolder(actorId, aggregate.intake().folderId());
+        return aggregate;
     }
 
     private SavedPlace requirePlace(UUID placeId) {
@@ -249,7 +238,7 @@ public class PlaceService {
                 .orElseThrow(() -> new DomainException(ErrorCode.RESOURCE_NOT_FOUND, "Saved place " + placeId + " was not found."));
     }
 
-    private Folder requireReelsPlaceMember(UUID actorId, UUID folderId) {
+    private void requireReelsPlaceMember(UUID actorId, UUID folderId) {
         Folder folder = collaborationStore.findFolderById(folderId)
                 .orElseThrow(() -> new DomainException(ErrorCode.RESOURCE_NOT_FOUND, "Folder " + folderId + " was not found."));
         if (folder.type() != FolderType.REELS_PLACE) {
@@ -258,23 +247,22 @@ public class PlaceService {
         collaborationStore.findMembership(folderId, actorId)
                 .orElseThrow(() -> new DomainException(ErrorCode.RESOURCE_NOT_FOUND,
                         "Actor " + actorId + " is not a member of folder " + folderId + "."));
-        return folder;
     }
-    private ShareIntakeItem findExistingIntake(UUID actorId, UUID folderId, String clientIntakeId, String contentFingerprint, Instant now) {
+    private ShareIntakeItem findFingerprintDuplicate(UUID actorId, UUID folderId, String contentFingerprint, Instant now) {
         Instant dedupeCutoff = now.minusSeconds(DEDUPE_WINDOW_SECONDS);
         return placeStore.listIntakesByFolderId(folderId).stream()
                 .filter(intake -> actorId.equals(intake.receivedByUserId()))
-                .filter(intake -> clientIntakeId.equals(intake.clientIntakeId())
-                        || (contentFingerprint != null
-                        && contentFingerprint.equals(intake.contentFingerprint())
-                        && !intake.receivedAt().isBefore(dedupeCutoff)))
+                .filter(intake -> contentFingerprint.equals(intake.contentFingerprint()))
+                .filter(intake -> !intake.receivedAt().isBefore(dedupeCutoff))
                 .findFirst()
                 .orElse(null);
     }
 
     private ShareIntakeView viewFor(ShareIntakeItem intake) {
-        SavedPlace resolvedPlace = intake.resolvedPlaceId() == null ? null : requirePlace(intake.resolvedPlaceId());
-        return ShareIntakeView.from(intake, placeStore.listCandidatesByIntakeId(intake.intakeId()), resolvedPlace);
+        PlaceStore.AggregateRead aggregate = placeStore.findAggregateByIntakeId(intake.intakeId())
+                .orElseThrow(() -> new DomainException(ErrorCode.RESOURCE_NOT_FOUND,
+                        "Share intake " + intake.intakeId() + " was not found."));
+        return ShareIntakeView.from(aggregate.intake(), aggregate.candidates(), aggregate.resolvedPlace());
     }
 
     private SavedPlace autoSavePlace(ShareIntakeItem intake, PlaceCandidate candidate, Instant now) {
@@ -308,19 +296,6 @@ public class PlaceService {
         }
         return null;
     }
-    private ShareIntakeItem reconcileExistingTerminal(ShareIntakeItem intake) {
-        if (intake.status() == ShareIntakeStatus.RESOLVED || intake.folderId() == null) {
-            return intake;
-        }
-        SavedPlace savedPlace = placeStore.listPlacesByFolderId(intake.folderId()).stream()
-                .filter(place -> intake.intakeId().equals(place.shareIntakeId()))
-                .findFirst()
-                .orElse(null);
-        if (savedPlace == null) {
-            return intake;
-        }
-        return placeStore.saveIntake(intake.resolve(savedPlace.placeId(), Instant.now(clock)));
-    }
 
 
     private List<PlaceCandidate> extractCandidates(UUID intakeId, String rawTitle, String rawText) {
@@ -352,63 +327,112 @@ public class PlaceService {
         String[] pieces = normalized.split("\\r?\\n|;|\\|");
         for (String piece : pieces) {
             String trimmed = normalizeOptional(piece);
-            if (trimmed == null) {
-                continue;
-            }
-            if (trimmed.toLowerCase(Locale.ROOT).startsWith("place:")) {
-                names.add(trimmed.substring("place:".length()).trim());
-            } else if (!looksLikeUrl(trimmed) && trimmed.length() <= 80) {
-                names.add(trimmed);
+            if (trimmed != null && trimmed.regionMatches(true, 0, "place:", 0, "place:".length())) {
+                String name = normalizeOptional(trimmed.substring("place:".length()));
+                if (name != null) {
+                    names.add(name);
+                }
             }
         }
     }
 
     private ResolvedPlaceFields resolvePlaceFields(ResolveShareIntakeCommand command, List<PlaceCandidate> candidates) {
+        boolean hasManualPlaceInput = command.manualName() != null || command.address() != null
+                || command.latitude() != null || command.longitude() != null;
         if (command.candidateId() != null) {
+            if (hasManualPlaceInput) {
+                throw invalidArgument("candidateId cannot be combined with manual place fields.");
+            }
             PlaceCandidate candidate = candidates.stream()
                     .filter(item -> item.candidateId().equals(command.candidateId()))
                     .findFirst()
                     .orElseThrow(() -> invalidArgument("candidateId does not belong to this intake."));
-            return new ResolvedPlaceFields(candidate.name(), candidate.address(), candidate.latitude(), candidate.longitude());
+            return new ResolvedPlaceFields(candidate.candidateId(), candidate.name(), candidate.address(), candidate.latitude(), candidate.longitude());
         }
         if (command.manualName() != null) {
             validateOptionalLocation(command.latitude(), command.longitude());
             return new ResolvedPlaceFields(
+                    null,
                     normalizeRequired(command.manualName(), "manualName"),
                     normalizeOptional(command.address()),
                     command.latitude(),
                     command.longitude());
         }
-        if (candidates.size() == 1) {
-            PlaceCandidate candidate = candidates.getFirst();
-            return new ResolvedPlaceFields(candidate.name(), candidate.address(), candidate.latitude(), candidate.longitude());
+        if (hasManualPlaceInput) {
+            throw invalidArgument("manualName is required when manual place fields are supplied.");
         }
         throw invalidArgument("ResolveShareIntake requires a candidateId or manualName.");
+    }
+
+    private String createIdentity(
+            UUID folderId,
+            UUID actorId,
+            String clientIntakeId,
+            String rawUrl,
+            String rawTitle,
+            String rawText,
+            String normalizedUrl,
+            String contentFingerprint,
+            String sourceApp,
+            String platform,
+            String receivedVia) {
+        return canonicalIdentity("create", folderId.toString(), actorId.toString(), clientIntakeId, rawUrl, rawTitle, rawText,
+                normalizedUrl, contentFingerprint, sourceApp, platform, receivedVia);
+    }
+
+    private String autoResolutionIdentity(PlaceCandidate candidate) {
+        return canonicalIdentity("candidate", candidate.candidateId().toString(), null, null, null, null, "",
+                VisitStatus.WANT_TO_GO.name());
+    }
+
+    private String resolutionIdentity(ResolveShareIntakeCommand command, ResolvedPlaceFields fields) {
+        String category = normalizeOptional(command.category());
+        String regionText = normalizeOptional(command.regionText());
+        String summary = normalizeOptional(command.summary());
+        String whyRecommended = normalizeOptional(command.whyRecommended());
+        String keywords = keywordIdentity(normalizeKeywords(command.keywords()));
+        String visitStatus = (command.visitStatus() == null ? VisitStatus.WANT_TO_GO : command.visitStatus()).name();
+        if (fields.candidateId() != null) {
+            return canonicalIdentity("candidate", fields.candidateId().toString(), category, regionText, summary, whyRecommended, keywords, visitStatus);
+        }
+        return canonicalIdentity("manual", fields.name(), fields.address(), numberIdentity(fields.latitude()), numberIdentity(fields.longitude()),
+                category, regionText, summary, whyRecommended, keywords, visitStatus);
+    }
+
+    private String canonicalIdentity(String type, String... values) {
+        StringBuilder identity = new StringBuilder(type);
+        for (String value : values) {
+            identity.append('|');
+            if (value == null) {
+                identity.append("-1:");
+            } else {
+                identity.append(value.length()).append(':').append(value);
+            }
+        }
+        return identity.toString();
+    }
+    private String keywordIdentity(List<String> keywords) {
+        StringBuilder identity = new StringBuilder().append(keywords.size()).append(':');
+        for (String keyword : keywords) {
+            identity.append(keyword.length()).append(':').append(keyword);
+        }
+        return identity.toString();
+    }
+
+    private String numberIdentity(Double value) {
+        return value == null ? null : Double.toString(value);
     }
 
     private String normalizeUrl(String rawUrl, String rawText) {
         String candidate = rawUrl == null ? firstUrl(rawText) : rawUrl;
         return candidate == null ? null : candidate.trim();
     }
-    private String fingerprint(String rawUrl, String rawTitle, String rawText, String normalizedUrl) {
-        String canonical = String.join("\n",
-                normalizedUrl == null ? "" : normalizedUrl,
-                rawTitle == null ? "" : rawTitle.toLowerCase(Locale.ROOT),
-                rawText == null ? "" : rawText.toLowerCase(Locale.ROOT));
-        return hashCanonical(canonical);
-    }
 
-    private String hashCanonical(String canonical) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8));
-            StringBuilder builder = new StringBuilder(digest.length * 2);
-            for (byte value : digest) {
-                builder.append(String.format("%02x", value));
-            }
-            return builder.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is unavailable.", exception);
+    private String requireClientFingerprint(String value) {
+        if (value == null || !value.matches("[0-9a-fA-F]{64}")) {
+            throw invalidArgument("contentFingerprint must be exactly 64 hexadecimal characters.");
         }
+        return value.toLowerCase(Locale.ROOT);
     }
 
 
@@ -421,7 +445,8 @@ public class PlaceService {
     }
 
     private boolean looksLikeUrl(String value) {
-        return value.startsWith("http://") || value.startsWith("https://");
+        String normalized = value.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("http://") || normalized.startsWith("https://");
     }
 
     private UUID requireUuid(UUID value, String fieldName) {
@@ -435,7 +460,8 @@ public class PlaceService {
         if ((latitude == null) != (longitude == null)) {
             throw invalidArgument("latitude and longitude must be supplied together.");
         }
-        if (latitude != null && (latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0)) {
+        if (latitude != null && (!Double.isFinite(latitude) || !Double.isFinite(longitude)
+                || latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0)) {
             throw invalidArgument("latitude or longitude is out of range.");
         }
     }
@@ -474,15 +500,12 @@ public class PlaceService {
         return new DomainException(ErrorCode.INVALID_ARGUMENT, message);
     }
 
-    private DomainException forbidden(String message) {
-        return new DomainException(ErrorCode.FORBIDDEN, message);
-    }
 
     private DomainException conflict(String message) {
         return new DomainException(ErrorCode.CONFLICT, message);
     }
 
-    private record ResolvedPlaceFields(String name, String address, Double latitude, Double longitude) {
+    private record ResolvedPlaceFields(UUID candidateId, String name, String address, Double latitude, Double longitude) {
     }
 
     public record CreateShareIntakeCommand(
@@ -495,6 +518,9 @@ public class PlaceService {
             String platform,
             String receivedVia,
             String contentFingerprint) {
+    }
+
+    public record UpdateShareIntakeCommand(String rawUrl, String rawTitle, String rawText) {
     }
 
     public record ResolveShareIntakeCommand(

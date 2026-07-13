@@ -12,6 +12,10 @@ public interface PlaceStore {
     ShareIntakeItem saveIntake(ShareIntakeItem intakeItem);
 
     Optional<ShareIntakeItem> findIntakeById(UUID intakeId);
+    Optional<ShareIntakeItem> findIntakeByCreateReceipt(UUID actorId, UUID folderId, String clientIntakeId);
+    Optional<AggregateRead> findAggregateByIntakeId(UUID intakeId);
+    List<AggregateRead> listAggregatesByFolderId(UUID folderId);
+    AggregateRead saveCreateReceipt(UUID intakeId, ShareIntakeItem.CreateReceipt receipt);
     List<ShareIntakeItem> listIntakes();
 
     List<ShareIntakeItem> listIntakesByFolderId(UUID folderId);
@@ -21,6 +25,7 @@ public interface PlaceStore {
     List<PlaceCandidate> listCandidatesByIntakeId(UUID intakeId);
 
     SavedPlace savePlace(SavedPlace savedPlace);
+    AggregateWrite saveIntakeAggregate(ShareIntakeItem intake, List<PlaceCandidate> candidates, SavedPlace resolvedPlace);
     ResolutionWrite saveResolution(ShareIntakeItem resolvedIntake, SavedPlace savedPlace);
 
     Optional<SavedPlace> findPlaceById(UUID placeId);
@@ -28,6 +33,11 @@ public interface PlaceStore {
     List<SavedPlace> listPlacesByFolderId(UUID folderId);
 
     void deletePlace(UUID placeId);
+
+    record AggregateWrite(ShareIntakeItem intake, List<PlaceCandidate> candidates, SavedPlace resolvedPlace) {
+    }
+    record AggregateRead(ShareIntakeItem intake, List<PlaceCandidate> candidates, SavedPlace resolvedPlace) {
+    }
 
     record ResolutionWrite(ShareIntakeItem intake, SavedPlace place) {
     }

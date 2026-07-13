@@ -5,6 +5,7 @@
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "node --test src/mobile-runtime.test.mjs",
     "web:export": "npx expo export --platform web --output-dir dist-web",
     "android:prebuild": "npx expo prebuild --platform android --no-install --clean",
     "ios:prebuild": "npx expo prebuild --platform ios --no-install --clean",
@@ -32,6 +33,7 @@
   "devDependencies": {
     "@types/react": "~18.2.79",
     "patch-package": "^8.0.1",
+    "sax": "^1.6.0",
     "typescript": "~5.3.3"
   }
 }
