@@ -221,7 +221,7 @@ jobs:
           test "$(plutil -extract picturejournalReceiptSentinel raw -o - "$PREFS_PLIST")" = "$SENTINEL_VALUE"
           test "$(plutil -extract picturejournalShareKey.0 raw -o - "$PREFS_PLIST")" = "$SHARE_PAYLOAD"
           plutil -p "$PREFS_PLIST" > ../../artifacts/mobile/ios-share-preferences-before.txt
-          xcrun simctl spawn "$SIMULATOR_UDID" killall cfprefsd
+          xcrun simctl spawn "$SIMULATOR_UDID" killall cfprefsd || true
           xcrun simctl openurl "$SIMULATOR_UDID" 'picturejournal://dataUrl=picturejournalShareKey#text'
           PREFS_ERROR_TMP="$(mktemp /tmp/picturejournal-prefs.XXXXXX)"
           : > "$PREFS_ERROR_TMP"
