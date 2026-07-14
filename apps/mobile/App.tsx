@@ -983,7 +983,7 @@ export default function App() {
     });
     Promise.all([
       refreshDiary(),
-      refreshPlaces(),
+      replayTrigger ? Promise.resolve() : refreshPlaces(),
       replayTrigger ? Promise.resolve() : refreshUnresolved(),
     ]).catch((error: Error) => {
       if (error.name !== 'AbortError') setStatus(error.message);
