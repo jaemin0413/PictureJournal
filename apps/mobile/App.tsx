@@ -238,7 +238,7 @@ export async function secureGetChunked(key: string): Promise<{ value: string; me
   return { value, metadata };
 }
 
-export async function secureSetChunked(key: string, value: string, receipts: Record<string, string>): Promise<void> {
+export async function secureSetChunked(key: string, value: string, receipts: Record<string, string>): Promise<PendingShareMetadata> {
   const previousRawMetadata = await secureGet(`${key}.meta`);
   let previousMetadata: PendingShareMetadata | null = null;
   if (previousRawMetadata) {
@@ -262,6 +262,7 @@ export async function secureSetChunked(key: string, value: string, receipts: Rec
       }
     }
   }
+  return metadata;
 }
 
 export async function secureDeleteChunked(key: string): Promise<void> {
@@ -438,6 +439,32 @@ export function confirmPendingShareOwnership(
     return { ...item, userId, intendedFolderId };
   });
 }
+export function isPendingShareReplayable(item: PendingSharePayload, userId: string, folderId: string): boolean {
+  return item.userId === userId
+    && item.intendedFolderId === folderId
+    && item.retryState !== 'validation'
+    && item.retryState !== 'conflict'
+    && item.retryState !== 'auth';
+}
+
+export function pendingShareReplaySignature(items: PendingSharePayload[], userId: string, folderId: string): string | null {
+  const replayableIds = items
+    .filter((item) => isPendingShareReplayable(item, userId, folderId))
+    .map((item) => item.clientIntakeId)
+    .sort();
+  return replayableIds.length ? replayableIds.join('|') : null;
+}
+
+export function pendingShareReplayTrigger(input: {
+  durableGeneration: string | null;
+  sessionUserId?: string | null;
+  placesFolderId?: string | null;
+  pendingShares: PendingSharePayload[];
+}): string | null {
+  if (!input.durableGeneration || !input.sessionUserId || !input.placesFolderId) return null;
+  const replayableSignature = pendingShareReplaySignature(input.pendingShares, input.sessionUserId, input.placesFolderId);
+  return replayableSignature ? `${input.sessionUserId}:${input.placesFolderId}:${replayableSignature}` : null;
+}
 
 
 export default function App() {
@@ -464,6 +491,7 @@ export default function App() {
   const [unresolved, setUnresolved] = useState<ShareIntake[]>([]);
   const [selectedIntake, setSelectedIntake] = useState<ShareIntake | null>(null);
   const [pendingShares, setPendingShares] = useState<PendingSharePayload[]>([]);
+  const [pendingShareGeneration, setPendingShareGeneration] = useState<string | null>(null);
   const pendingSharesRef = useRef<PendingSharePayload[]>([]);
   const pendingShareReceiptsRef = useRef<Record<string, string>>({});
   const pendingShareMutationRef = useRef<Promise<void>>(Promise.resolve());
@@ -473,6 +501,8 @@ export default function App() {
   const sessionRef = useRef<Session | null>(null);
   const sessionEpochRef = useRef(0);
   const replayAbortRef = useRef<AbortController | null>(null);
+  const lastAutoReplayTriggerRef = useRef<string | null>(null);
+  const selectedPlacesFolderIdRef = useRef<string | null>(null);
   const [status, setStatus] = useState('Secure session restore pending.');
   const [restoreRetryAvailable, setRestoreRetryAvailable] = useState(false);
   const [restoringSession, setRestoringSession] = useState(true);
@@ -534,6 +564,10 @@ export default function App() {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    selectedPlacesFolderIdRef.current = selectedPlacesFolderId;
+  }, [selectedPlacesFolderId]);
 
   const api = useCallback(
     async <T,>(path: string, options: RequestInit = {}): Promise<T> => {
@@ -608,9 +642,10 @@ export default function App() {
         JSON.stringify(items) === JSON.stringify(pendingSharesRef.current)
         && JSON.stringify(receipts) === JSON.stringify(pendingShareReceiptsRef.current)
       ) return;
-      await secureSetChunked(pendingShareKey, JSON.stringify(items), receipts);
+      const metadata = await secureSetChunked(pendingShareKey, JSON.stringify(items), receipts);
       pendingSharesRef.current = items;
       pendingShareReceiptsRef.current = receipts;
+      setPendingShareGeneration(metadata.generation);
       setPendingShares(items);
     };
     const next = pendingShareMutationRef.current.then(commit, commit);
@@ -666,38 +701,59 @@ export default function App() {
     setSelectedPlace((current) => current ?? data[0] ?? null);
   }, [api, placesFolder]);
 
+  const publishUnresolved = useCallback((serverItems: ShareIntake[]) => {
+    setUnresolved(serverItems);
+    setSelectedIntake((current) => {
+      const retained = current ? serverItems.find((item) => item.intakeId === current.intakeId) : null;
+      if (retained) return retained;
+      setRepairName('');
+      setRepairAddress('');
+      setRepairRegion('');
+      setRepairLat('');
+      setRepairLng('');
+      return serverItems[0] ?? null;
+    });
+  }, []);
+
   const refreshUnresolved = useCallback(async () => {
+    if (!session || !placesFolder) return;
+    const serverItems = await api<ShareIntake[]>(`/api/v1/folders/${placesFolder.folderId}/share-intake/unresolved`);
+    publishUnresolved(serverItems);
+  }, [api, placesFolder, publishUnresolved, session]);
+
+  const replayPendingShares = useCallback(async (trigger: string) => {
     if (!session || !placesFolder) return;
     const epoch = sessionEpochRef.current;
     replayAbortRef.current?.abort();
     const controller = new AbortController();
     replayAbortRef.current = controller;
-    const isCurrent = () =>
+    const userId = session.user.userId;
+    const folderId = placesFolder.folderId;
+    const isSessionCurrent = () =>
       !controller.signal.aborted
       && sessionEpochRef.current === epoch
-      && sessionRef.current?.user.userId === session.user.userId;
-    const serverItems = await api<ShareIntake[]>(
-      `/api/v1/folders/${placesFolder.folderId}/share-intake/unresolved`,
-      { signal: controller.signal },
-    );
-    if (!isCurrent()) return;
+      && sessionRef.current?.user.userId === userId
+      && selectedPlacesFolderIdRef.current === folderId;
+    const isCurrent = () =>
+      isSessionCurrent()
+      && pendingShareReplayTrigger({
+        durableGeneration: pendingShareGeneration,
+        sessionUserId: userId,
+        placesFolderId: folderId,
+        pendingShares: pendingSharesRef.current,
+      }) === trigger;
     const snapshot = pendingSharesRef.current;
     const remaining: PendingSharePayload[] = [];
+    const processedIds = new Set<string>();
     for (const pending of snapshot) {
-      if (pending.userId !== session.user.userId || pending.intendedFolderId !== placesFolder.folderId) {
-        remaining.push(pending);
-        continue;
-      }
-      if (pending.retryState === 'validation' || pending.retryState === 'conflict' || pending.retryState === 'auth') {
-        remaining.push(pending);
-        continue;
-      }
+      if (!isPendingShareReplayable(pending, userId, folderId)) continue;
+      processedIds.add(pending.clientIntakeId);
       try {
         const intake = await api<ShareIntake>('/api/v1/share-intake', {
           method: 'POST',
           signal: controller.signal,
           body: JSON.stringify({
-            folderId: placesFolder.folderId,
+            folderId,
             clientIntakeId: pending.clientIntakeId,
             contentFingerprint: pending.contentFingerprint,
             rawUrl: pending.rawUrl,
@@ -718,31 +774,41 @@ export default function App() {
       }
     }
     if (!isCurrent()) return;
-    const processedIds = new Set(snapshot.map((item) => item.clientIntakeId));
     await updatePendingShares((current) => [
       ...current.filter((item) => !processedIds.has(item.clientIntakeId)),
       ...remaining,
     ]);
-    if (!isCurrent()) return;
-    setUnresolved(serverItems);
-    setSelectedIntake((current) => {
-      const retained = current ? serverItems.find((item) => item.intakeId === current.intakeId) : null;
-      if (retained) return retained;
-      setRepairName('');
-      setRepairAddress('');
-      setRepairRegion('');
-      setRepairLat('');
-      setRepairLng('');
-      return serverItems[0] ?? null;
-    });
-    const localPending = remaining.filter((item) => item.intendedFolderId === placesFolder.folderId).length;
+    if (!isSessionCurrent()) return;
+    const [serverItems, serverPlaces] = await Promise.all([
+      api<ShareIntake[]>(`/api/v1/folders/${folderId}/share-intake/unresolved`, { signal: controller.signal }),
+      api<SavedPlace[]>(`/api/v1/folders/${folderId}/saved-places`, { signal: controller.signal }),
+    ]);
+    if (!isSessionCurrent()) return;
+    setPlaces(serverPlaces);
+    setSelectedPlace((current) => current ?? serverPlaces[0] ?? null);
+    publishUnresolved(serverItems);
+    const localPending = remaining.filter((item) => item.intendedFolderId === folderId).length;
     if (localPending) {
       const blocked = remaining.filter((item) => item.retryState === 'validation' || item.retryState === 'conflict');
       setStatus(blocked.length
         ? `${blocked.length} share payload${blocked.length === 1 ? '' : 's'} need manual remediation: ${blocked.map((item) => item.lastError).join(' ')}`
         : `${localPending} local share payload${localPending === 1 ? '' : 's'} retained for an explicit retry.`);
     }
-  }, [api, placesFolder, session, updatePendingShares]);
+  }, [api, pendingShareGeneration, placesFolder, publishUnresolved, session, updatePendingShares]);
+
+  const refreshUnresolvedFromPendingShares = useCallback(async () => {
+    const trigger = pendingShareReplayTrigger({
+      durableGeneration: pendingShareGeneration,
+      sessionUserId: session?.user.userId,
+      placesFolderId: placesFolder?.folderId,
+      pendingShares: pendingSharesRef.current,
+    });
+    if (trigger) {
+      await replayPendingShares(trigger);
+      return;
+    }
+    await Promise.all([refreshPlaces(), refreshUnresolved()]);
+  }, [pendingShareGeneration, placesFolder, refreshPlaces, refreshUnresolved, replayPendingShares, session]);
 
   const restoreSession = useCallback(async () => {
     const restoreEpoch = sessionEpochRef.current;
@@ -909,10 +975,37 @@ export default function App() {
 
   useEffect(() => {
     if (!diaryFolder && !placesFolder) return;
-    Promise.all([refreshDiary(), refreshPlaces(), refreshUnresolved()]).catch((error: Error) => {
+    const replayTrigger = pendingShareReplayTrigger({
+      durableGeneration: pendingShareGeneration,
+      sessionUserId: session?.user.userId,
+      placesFolderId: placesFolder?.folderId,
+      pendingShares,
+    });
+    Promise.all([
+      refreshDiary(),
+      refreshPlaces(),
+      replayTrigger ? Promise.resolve() : refreshUnresolved(),
+    ]).catch((error: Error) => {
       if (error.name !== 'AbortError') setStatus(error.message);
     });
-  }, [diaryFolder, placesFolder, refreshDiary, refreshPlaces, refreshUnresolved]);
+  }, [diaryFolder, pendingShareGeneration, pendingShares, placesFolder, refreshDiary, refreshPlaces, refreshUnresolved, session]);
+  useEffect(() => {
+    const trigger = pendingShareReplayTrigger({
+      durableGeneration: pendingShareGeneration,
+      sessionUserId: session?.user.userId,
+      placesFolderId: placesFolder?.folderId,
+      pendingShares,
+    });
+    if (!trigger) {
+      lastAutoReplayTriggerRef.current = null;
+      return;
+    }
+    if (lastAutoReplayTriggerRef.current === trigger) return;
+    lastAutoReplayTriggerRef.current = trigger;
+    replayPendingShares(trigger).catch((error: Error) => {
+      if (error.name !== 'AbortError') setStatus(error.message);
+    });
+  }, [pendingShareGeneration, pendingShares, placesFolder, replayPendingShares, session]);
 
   const run = async (label: string, action: () => Promise<void>) => {
     if (mutationInFlightRef.current) return;
@@ -962,6 +1055,8 @@ export default function App() {
       setPendingShares([]);
       pendingSharesRef.current = [];
       pendingShareReceiptsRef.current = {};
+      setPendingShareGeneration(null);
+      lastAutoReplayTriggerRef.current = null;
       await pendingShareMutationRef.current.catch(() => undefined);
       const cleanupResults = await Promise.allSettled([
         secureDelete(sessionKey),
@@ -973,6 +1068,8 @@ export default function App() {
       setPendingShares([]);
       pendingSharesRef.current = [];
       pendingShareReceiptsRef.current = {};
+      setPendingShareGeneration(null);
+      lastAutoReplayTriggerRef.current = null;
       setUnresolved([]);
       let warning: string | null = cleanupFailures.length
         ? `Local cleanup warning: ${cleanupFailures.map((result) => result.reason instanceof Error ? result.reason.message : 'storage cleanup failed').join(' ')}`
@@ -1306,7 +1403,7 @@ export default function App() {
               </View>
             ) : <Text style={styles.description}>Select a saved place from the list.</Text>}
             <Text style={styles.segmentTitle}>Unresolved inbox</Text>
-            <Action label="Refresh unresolved intake from pending shares" onPress={() => run('Refreshing unresolved inbox.', refreshUnresolved)} secondary disabled={busy} />
+            <Action label="Refresh unresolved intake from pending shares" onPress={() => run('Refreshing unresolved inbox.', refreshUnresolvedFromPendingShares)} secondary disabled={busy} />
             {pendingShares
               .filter((item) => (!item.userId || item.userId === session?.user.userId)
                 && (!placesFolder || !item.intendedFolderId || item.intendedFolderId === placesFolder.folderId))

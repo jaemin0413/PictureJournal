@@ -46,7 +46,10 @@ const {
   normalizeExifTakenAt,
   parseCoordinate,
   parsePendingShares,
+  pendingShareReplayTrigger,
+  pendingShareReplaySignature,
   scopePendingShare,
+  isPendingShareReplayable,
   isSessionOperationCurrent,
   secureDelete,
   secureDeleteChunked,
@@ -224,6 +227,76 @@ test('share capture scope distinguishes authenticated records from quarantine', 
     { ...item, userId: 'user-a' },
   );
   assert.deepEqual(plain(confirmPendingShareOwnership([item], 'user-b', 'folder-b', item.clientIntakeId)[0]), { ...item, userId: 'user-b', intendedFolderId: 'folder-b' });
+});
+
+test('pending share replay trigger is scoped and stable across durable rewrites', () => {
+  const retryable = pending('share-1', { userId: 'user-a', intendedFolderId: 'folder-a', retryState: 'retryable' });
+  const newlyBound = pending('share-4', { userId: 'user-a', intendedFolderId: 'folder-a' });
+  const blocked = pending('share-2', { userId: 'user-a', intendedFolderId: 'folder-a', retryState: 'auth' });
+  const otherFolder = pending('share-3', { userId: 'user-a', intendedFolderId: 'folder-b' });
+  assert.equal(isPendingShareReplayable(retryable, 'user-a', 'folder-a'), true);
+  assert.equal(isPendingShareReplayable(blocked, 'user-a', 'folder-a'), false);
+  assert.equal(isPendingShareReplayable(otherFolder, 'user-a', 'folder-a'), false);
+  assert.equal(pendingShareReplaySignature([retryable, blocked], 'user-a', 'folder-a'), 'share-1');
+  assert.equal(pendingShareReplayTrigger({
+    durableGeneration: null,
+    sessionUserId: 'user-a',
+    placesFolderId: 'folder-a',
+    pendingShares: [retryable],
+  }), null);
+  assert.equal(pendingShareReplayTrigger({
+    durableGeneration: 'gen-1',
+    sessionUserId: 'user-a',
+    placesFolderId: 'folder-a',
+    pendingShares: [blocked, otherFolder],
+  }), null);
+  assert.equal(pendingShareReplayTrigger({
+    durableGeneration: 'gen-1',
+    sessionUserId: 'user-a',
+    placesFolderId: 'folder-a',
+    pendingShares: [retryable, blocked],
+  }), 'user-a:folder-a:share-1');
+  assert.equal(pendingShareReplayTrigger({
+    durableGeneration: 'gen-2',
+    sessionUserId: 'user-a',
+    placesFolderId: 'folder-a',
+    pendingShares: [{ ...retryable, lastError: '503 unavailable', retryState: 'retryable' }, blocked],
+  }), 'user-a:folder-a:share-1');
+  assert.equal(pendingShareReplayTrigger({
+    durableGeneration: 'gen-3',
+    sessionUserId: 'user-a',
+    placesFolderId: 'folder-a',
+    pendingShares: [newlyBound, retryable, blocked],
+  }), 'user-a:folder-a:share-1|share-4');
+  assert.equal(pendingShareReplayTrigger({
+    durableGeneration: 'gen-2',
+    sessionUserId: 'user-a',
+    placesFolderId: 'folder-a',
+    pendingShares: [blocked],
+  }), null);
+});
+
+test('post-replay refresh removes processed shares before publishing server read models', () => {
+  const resolved = pending('resolved', { userId: 'user-a', intendedFolderId: 'folder-a' });
+  const failed = pending('failed', { userId: 'user-a', intendedFolderId: 'folder-a' });
+  const otherFolder = pending('other', { userId: 'user-a', intendedFolderId: 'folder-b' });
+  const failedClassified = { ...failed, lastError: '422 validation', retryState: 'validation' };
+  const processedIds = new Set(['resolved', 'failed']);
+  const afterReplay = updatePendingShareQueue([resolved, failed, otherFolder], (current) => [
+    ...current.filter((item) => !processedIds.has(item.clientIntakeId)),
+    failedClassified,
+  ]);
+  assert.deepEqual(afterReplay.map((item) => item.clientIntakeId), ['other', 'failed']);
+  assert.equal(pendingShareReplayTrigger({
+    durableGeneration: 'gen-after-replay',
+    sessionUserId: 'user-a',
+    placesFolderId: 'folder-a',
+    pendingShares: afterReplay,
+  }), null);
+  const serverUnresolved = [{ intakeId: 'server-unresolved', folderId: 'folder-a', status: 'UNRESOLVED' }];
+  const serverPlaces = [{ placeId: 'resolved-place', folderId: 'folder-a', name: 'Resolved Place' }];
+  assert.deepEqual(serverUnresolved.map((item) => item.intakeId), ['server-unresolved']);
+  assert.deepEqual(serverPlaces.map((item) => item.placeId), ['resolved-place']);
 });
 
 test('corrupt chunk metadata can be reset and rewritten', async () => {
