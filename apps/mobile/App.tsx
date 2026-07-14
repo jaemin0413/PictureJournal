@@ -5,7 +5,7 @@ import * as Linking from 'expo-linking';
 import * as Location from 'expo-location';
 import * as SecureStore from 'expo-secure-store';
 import { StatusBar } from 'expo-status-bar';
-import { useShareIntent } from 'expo-share-intent';
+import { getShareIntent, useShareIntent } from 'expo-share-intent';
 import type { ComponentProps } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -933,7 +933,11 @@ export default function App() {
       const rawUrl = text(parsed.queryParams?.url);
       const rawTitle = text(parsed.queryParams?.title);
       const rawText = text(parsed.queryParams?.text);
-      if (text(parsed.queryParams?.dataUrl) || (!rawUrl && !rawTitle && !rawText)) return;
+      if (text(parsed.queryParams?.dataUrl)) {
+        await getShareIntent(url);
+        return;
+      }
+      if (!rawUrl && !rawTitle && !rawText) return;
       const intentKey = `link:${await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, url)}`;
       if (capturedIntentKeysRef.current.has(intentKey)) return;
       capturedIntentKeysRef.current.add(intentKey);
