@@ -186,6 +186,7 @@ jobs:
           done
           test -n "$GROUP_CONTAINER"
           xcrun simctl terminate "$SIMULATOR_UDID" com.picturejournal.mobile
+          xcrun simctl shutdown "$SIMULATOR_UDID"
           PREFS_PATH="$GROUP_CONTAINER/Library/Preferences/group.com.picturejournal.mobile"
           PREFS_PLIST="$PREFS_PATH.plist"
           RUN_NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
@@ -221,7 +222,8 @@ jobs:
           test "$(plutil -extract picturejournalReceiptSentinel raw -o - "$PREFS_PLIST")" = "$SENTINEL_VALUE"
           test "$(plutil -extract picturejournalShareKey.0 raw -o - "$PREFS_PLIST")" = "$SHARE_PAYLOAD"
           plutil -p "$PREFS_PLIST" > ../../artifacts/mobile/ios-share-preferences-before.txt
-          xcrun simctl spawn "$SIMULATOR_UDID" killall cfprefsd || true
+          xcrun simctl boot "$SIMULATOR_UDID"
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
           xcrun simctl openurl "$SIMULATOR_UDID" 'picturejournal://dataUrl=picturejournalShareKey#text'
           PREFS_ERROR_TMP="$(mktemp /tmp/picturejournal-prefs.XXXXXX)"
           : > "$PREFS_ERROR_TMP"
