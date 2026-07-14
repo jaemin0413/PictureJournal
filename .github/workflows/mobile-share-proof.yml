@@ -122,11 +122,15 @@ jobs:
             -sdk iphonesimulator \
             -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
             -derivedDataPath ios/build \
-            build | tee ../../artifacts/mobile/ios-simulator-build.log
+            build > ../../artifacts/mobile/ios-simulator-build.log 2>&1
       - name: Run iOS simulator share handoff smoke
         run: |
           set -euo pipefail
           mkdir -p ../../artifacts/mobile
+          SMOKE_LOG=../../artifacts/mobile/ios-share-smoke.log
+          : > "$SMOKE_LOG"
+          exec > >(tee -a "$SMOKE_LOG") 2>&1
+          set -x
           METRO_PID=''
           PREFS_ERROR_TMP=''
           cleanup() {
@@ -173,7 +177,14 @@ jobs:
           test -n "$APP_PATH"
           xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
           xcrun simctl launch "$SIMULATOR_UDID" com.picturejournal.mobile
-          GROUP_CONTAINER="$(xcrun simctl get_app_container "$SIMULATOR_UDID" com.picturejournal.mobile group.com.picturejournal.mobile)"
+          GROUP_CONTAINER=''
+          for attempt in $(seq 1 30); do
+            if GROUP_CONTAINER="$(xcrun simctl get_app_container "$SIMULATOR_UDID" com.picturejournal.mobile group.com.picturejournal.mobile 2>> "$SMOKE_LOG")"; then
+              break
+            fi
+            sleep 2
+          done
+          test -n "$GROUP_CONTAINER"
           xcrun simctl terminate "$SIMULATOR_UDID" com.picturejournal.mobile
           PREFS_PATH="$GROUP_CONTAINER/Library/Preferences/group.com.picturejournal.mobile"
           PREFS_PLIST="$PREFS_PATH.plist"
@@ -264,3 +275,4 @@ jobs:
             artifacts/mobile/ios-share-preferences-before.txt
             artifacts/mobile/ios-share-preferences-after.txt
             artifacts/mobile/ios-share-preferences-failure.log
+            artifacts/mobile/ios-share-smoke.log
