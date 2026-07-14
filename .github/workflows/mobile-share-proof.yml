@@ -203,53 +203,18 @@ jobs:
           done
           test "$bundle_ready" -eq 1
           xcrun simctl terminate "$SIMULATOR_UDID" com.picturejournal.mobile
-          xcrun simctl shutdown "$SIMULATOR_UDID"
-          SIMULATOR_STATE=''
-          for attempt in $(seq 1 30); do
-            SIMULATOR_STATE="$(xcrun simctl list devices -j | ruby -rjson -e 'udid = ARGV.fetch(0); devices = JSON.parse(STDIN.read).fetch("devices").values.flatten; device = devices.find { |candidate| candidate["udid"] == udid }; abort("Simulator disappeared: #{udid}") unless device; puts device.fetch("state")' "$SIMULATOR_UDID")"
-            if [[ "$SIMULATOR_STATE" == 'Shutdown' ]]; then
-              break
-            fi
-            sleep 1
-          done
-          test "$SIMULATOR_STATE" = 'Shutdown'
           PREFS_PATH="$GROUP_CONTAINER/Library/Preferences/group.com.picturejournal.mobile"
           PREFS_PLIST="$PREFS_PATH.plist"
           RUN_NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
           SENTINEL_VALUE="ci-domain-readable-${RUN_NONCE}"
-          SHARE_PAYLOAD="place: Cafe Onion from GitHub Actions iOS [${RUN_NONCE}]"
-          python3 - "$PREFS_PLIST" "$SENTINEL_VALUE" "$SHARE_PAYLOAD" <<'PY'
-          import os
-          import plistlib
-          import sys
-          import tempfile
-
-          path, sentinel, share_payload = sys.argv[1:4]
-          preferences = {}
-          if os.path.exists(path):
-              with open(path, "rb") as preferences_file:
-                  preferences = plistlib.load(preferences_file)
-          preferences["picturejournalReceiptSentinel"] = sentinel
-          preferences["picturejournalShareKey"] = [share_payload]
-          os.makedirs(os.path.dirname(path), exist_ok=True)
-          descriptor, temporary_path = tempfile.mkstemp(
-              dir=os.path.dirname(path),
-              prefix=".picturejournal.",
-          )
-          try:
-              with os.fdopen(descriptor, "wb") as preferences_file:
-                  plistlib.dump(preferences, preferences_file)
-              os.replace(temporary_path, path)
-          finally:
-              if os.path.exists(temporary_path):
-                  os.unlink(temporary_path)
-          PY
+          SHARE_PAYLOAD="Cafe Onion GitHub Actions iOS nonce-${RUN_NONCE}"
+          defaults write "$PREFS_PATH" picturejournalReceiptSentinel -string "$SENTINEL_VALUE"
+          defaults write "$PREFS_PATH" picturejournalShareKey -array "$SHARE_PAYLOAD"
           test -f "$PREFS_PLIST"
           test "$(plutil -extract picturejournalReceiptSentinel raw -o - "$PREFS_PLIST")" = "$SENTINEL_VALUE"
           test "$(plutil -extract picturejournalShareKey.0 raw -o - "$PREFS_PLIST")" = "$SHARE_PAYLOAD"
-          plutil -p "$PREFS_PLIST" > ../../artifacts/mobile/ios-share-preferences-before.txt
-          xcrun simctl boot "$SIMULATOR_UDID"
-          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          defaults read "$PREFS_PATH" > ../../artifacts/mobile/ios-share-preferences-before.txt
+          xcrun simctl spawn "$SIMULATOR_UDID" killall cfprefsd || true
           xcrun simctl launch "$SIMULATOR_UDID" com.picturejournal.mobile
           sleep 10
           xcrun simctl openurl "$SIMULATOR_UDID" 'picturejournal://dataUrl=picturejournalShareKey#text'
