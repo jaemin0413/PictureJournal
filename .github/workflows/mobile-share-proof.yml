@@ -180,12 +180,36 @@ jobs:
           RUN_NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
           SENTINEL_VALUE="ci-domain-readable-${RUN_NONCE}"
           SHARE_PAYLOAD="place: Cafe Onion from GitHub Actions iOS [${RUN_NONCE}]"
-          defaults write "$PREFS_PATH" picturejournalReceiptSentinel -string "$SENTINEL_VALUE"
-          defaults write "$PREFS_PATH" picturejournalShareKey -array "$SHARE_PAYLOAD"
+          python3 - "$PREFS_PLIST" "$SENTINEL_VALUE" "$SHARE_PAYLOAD" <<'PY'
+          import os
+          import plistlib
+          import sys
+          import tempfile
+
+          path, sentinel, share_payload = sys.argv[1:4]
+          preferences = {}
+          if os.path.exists(path):
+              with open(path, "rb") as preferences_file:
+                  preferences = plistlib.load(preferences_file)
+          preferences["picturejournalReceiptSentinel"] = sentinel
+          preferences["picturejournalShareKey"] = [share_payload]
+          os.makedirs(os.path.dirname(path), exist_ok=True)
+          descriptor, temporary_path = tempfile.mkstemp(
+              dir=os.path.dirname(path),
+              prefix=".picturejournal.",
+          )
+          try:
+              with os.fdopen(descriptor, "wb") as preferences_file:
+                  plistlib.dump(preferences, preferences_file)
+              os.replace(temporary_path, path)
+          finally:
+              if os.path.exists(temporary_path):
+                  os.unlink(temporary_path)
+          PY
           test -f "$PREFS_PLIST"
           test "$(plutil -extract picturejournalReceiptSentinel raw -o - "$PREFS_PLIST")" = "$SENTINEL_VALUE"
           test "$(plutil -extract picturejournalShareKey.0 raw -o - "$PREFS_PLIST")" = "$SHARE_PAYLOAD"
-          defaults read "$PREFS_PATH" > ../../artifacts/mobile/ios-share-preferences-before.txt
+          plutil -p "$PREFS_PLIST" > ../../artifacts/mobile/ios-share-preferences-before.txt
           xcrun simctl spawn "$SIMULATOR_UDID" killall cfprefsd
           xcrun simctl openurl "$SIMULATOR_UDID" 'picturejournal://dataUrl=picturejournalShareKey#text'
           PREFS_ERROR_TMP="$(mktemp /tmp/picturejournal-prefs.XXXXXX)"
@@ -205,7 +229,7 @@ jobs:
               raise SystemExit(11)
           PY
             then
-              defaults read "$PREFS_PATH" > ../../artifacts/mobile/ios-share-preferences-after.txt
+              plutil -p "$PREFS_PLIST" > ../../artifacts/mobile/ios-share-preferences-after.txt
               share_received=1
               break
             else
