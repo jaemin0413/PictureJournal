@@ -187,6 +187,15 @@ jobs:
           test -n "$GROUP_CONTAINER"
           xcrun simctl terminate "$SIMULATOR_UDID" com.picturejournal.mobile
           xcrun simctl shutdown "$SIMULATOR_UDID"
+          SIMULATOR_STATE=''
+          for attempt in $(seq 1 30); do
+            SIMULATOR_STATE="$(xcrun simctl list devices -j | ruby -rjson -e 'udid = ARGV.fetch(0); devices = JSON.parse(STDIN.read).fetch("devices").values.flatten; device = devices.find { |candidate| candidate["udid"] == udid }; abort("Simulator disappeared: #{udid}") unless device; puts device.fetch("state")' "$SIMULATOR_UDID")"
+            if [[ "$SIMULATOR_STATE" == 'Shutdown' ]]; then
+              break
+            fi
+            sleep 1
+          done
+          test "$SIMULATOR_STATE" = 'Shutdown'
           PREFS_PATH="$GROUP_CONTAINER/Library/Preferences/group.com.picturejournal.mobile"
           PREFS_PLIST="$PREFS_PATH.plist"
           RUN_NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"

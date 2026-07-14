@@ -94,6 +94,7 @@ if (!developmentBuild && !apiBaseUrl.startsWith('https://')) throw new Error('Re
 const sessionKey = 'picturejournal.session.v1';
 const pendingShareKey = 'picturejournal.pendingShares.v3';
 const pendingShareChunkByteLimit = 1800;
+const pendingShareTtlMs = 24 * 60 * 60 * 1000;
 const diaryFolderKey = 'picturejournal.diaryFolder.v1';
 const placesFolderKey = 'picturejournal.placesFolder.v1';
 const screens: { key: Screen; label: string; product: 'Core' | 'Photo Diary' | 'Saved Places' }[] = [
@@ -334,6 +335,19 @@ export function classifyAuthResponse(statusCode: number | undefined): 'reauthent
   return 'retry';
 }
 
+export function isPendingShareExpired(item: PendingSharePayload, now = Date.now()): boolean {
+  return now - item.receivedAt >= pendingShareTtlMs;
+}
+
+export function filterFreshPendingShares(items: PendingSharePayload[], now = Date.now()): PendingSharePayload[] {
+  return items.filter((item) => !isPendingShareExpired(item, now));
+}
+
+export function filterPendingShareReceipts(receipts: Record<string, string>, items: PendingSharePayload[]): Record<string, string> {
+  const retainedIds = new Set(items.map((item) => item.clientIntakeId));
+  return Object.fromEntries(Object.entries(receipts).filter(([, clientIntakeId]) => retainedIds.has(clientIntakeId)));
+}
+
 export function dedupePendingShares(items: PendingSharePayload[]): PendingSharePayload[] {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -387,8 +401,20 @@ function parseStoredSession(raw: string): Session {
   ) throw new Error('Stored session is invalid.');
   return record as unknown as Session;
 }
-export function updatePendingShareQueue(current: PendingSharePayload[], update: (items: PendingSharePayload[]) => PendingSharePayload[]): PendingSharePayload[] {
-  return dedupePendingShares(update(current));
+export function restorePendingShareQueue(
+  storedItems: PendingSharePayload[],
+  currentItems: PendingSharePayload[],
+  storedReceipts: Record<string, string>,
+  currentReceipts: Record<string, string>,
+  now = Date.now(),
+): { items: PendingSharePayload[]; receipts: Record<string, string> } {
+  const items = updatePendingShareQueue([...storedItems, ...currentItems], (current) => current, now);
+  const receipts = filterPendingShareReceipts({ ...storedReceipts, ...currentReceipts }, items);
+  return { items, receipts };
+}
+
+export function updatePendingShareQueue(current: PendingSharePayload[], update: (items: PendingSharePayload[]) => PendingSharePayload[], now = Date.now()): PendingSharePayload[] {
+  return filterFreshPendingShares(dedupePendingShares(update(filterFreshPendingShares(current, now))), now);
 }
 export function applyPendingShareDelivery(
   items: PendingSharePayload[],
@@ -439,17 +465,18 @@ export function confirmPendingShareOwnership(
     return { ...item, userId, intendedFolderId };
   });
 }
-export function isPendingShareReplayable(item: PendingSharePayload, userId: string, folderId: string): boolean {
-  return item.userId === userId
+export function isPendingShareReplayable(item: PendingSharePayload, userId: string, folderId: string, now = Date.now()): boolean {
+  return !isPendingShareExpired(item, now)
+    && item.userId === userId
     && item.intendedFolderId === folderId
     && item.retryState !== 'validation'
     && item.retryState !== 'conflict'
     && item.retryState !== 'auth';
 }
 
-export function pendingShareReplaySignature(items: PendingSharePayload[], userId: string, folderId: string): string | null {
+export function pendingShareReplaySignature(items: PendingSharePayload[], userId: string, folderId: string, now = Date.now()): string | null {
   const replayableIds = items
-    .filter((item) => isPendingShareReplayable(item, userId, folderId))
+    .filter((item) => isPendingShareReplayable(item, userId, folderId, now))
     .map((item) => item.clientIntakeId)
     .sort();
   return replayableIds.length ? replayableIds.join('|') : null;
@@ -637,7 +664,7 @@ export default function App() {
   ) => {
     const commit = async () => {
       const items = updatePendingShareQueue(pendingSharesRef.current, update);
-      const receipts = updateReceipts(pendingShareReceiptsRef.current);
+      const receipts = filterPendingShareReceipts(updateReceipts(pendingShareReceiptsRef.current), items);
       if (
         JSON.stringify(items) === JSON.stringify(pendingSharesRef.current)
         && JSON.stringify(receipts) === JSON.stringify(pendingShareReceiptsRef.current)
@@ -827,8 +854,8 @@ export default function App() {
     if (storedShares) {
       const parsedShares = parsePendingShares(storedShares.value);
       await updatePendingShares(
-        (current) => [...parsedShares, ...current],
-        (receipts) => ({ ...storedShares.metadata.receipts, ...receipts }),
+        (current) => restorePendingShareQueue(parsedShares, current, storedShares.metadata.receipts, pendingShareReceiptsRef.current).items,
+        (receipts) => restorePendingShareQueue(parsedShares, pendingSharesRef.current, storedShares.metadata.receipts, receipts).receipts,
       );
       if (!isCurrent()) return;
     }
@@ -1006,6 +1033,14 @@ export default function App() {
       if (error.name !== 'AbortError') setStatus(error.message);
     });
   }, [pendingShareGeneration, pendingShares, placesFolder, replayPendingShares, session]);
+  useEffect(() => {
+    if (!pendingShares.length) return;
+    const nextExpiry = Math.min(...pendingShares.map((item) => item.receivedAt + pendingShareTtlMs));
+    const timeout = setTimeout(() => {
+      updatePendingShares((current) => current).catch((error: Error) => setStatus(error.message));
+    }, Math.max(0, nextExpiry - Date.now() + 1));
+    return () => clearTimeout(timeout);
+  }, [pendingShares, updatePendingShares]);
 
   const run = async (label: string, action: () => Promise<void>) => {
     if (mutationInFlightRef.current) return;
@@ -1404,7 +1439,7 @@ export default function App() {
             ) : <Text style={styles.description}>Select a saved place from the list.</Text>}
             <Text style={styles.segmentTitle}>Unresolved inbox</Text>
             <Action label="Refresh unresolved intake from pending shares" onPress={() => run('Refreshing unresolved inbox.', refreshUnresolvedFromPendingShares)} secondary disabled={busy} />
-            {pendingShares
+            {filterFreshPendingShares(pendingShares)
               .filter((item) => (!item.userId || item.userId === session?.user.userId)
                 && (!placesFolder || !item.intendedFolderId || item.intendedFolderId === placesFolder.folderId))
               .map((item) => (

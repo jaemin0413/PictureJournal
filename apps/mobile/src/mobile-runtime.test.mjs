@@ -42,6 +42,8 @@ const {
   confirmPendingShareOwnership,
   createPendingShareMetadata,
   dedupePendingShares,
+  filterPendingShareReceipts,
+  isPendingShareExpired,
   normalizeExifCoordinate,
   normalizeExifTakenAt,
   parseCoordinate,
@@ -50,6 +52,7 @@ const {
   pendingShareReplaySignature,
   scopePendingShare,
   isPendingShareReplayable,
+  restorePendingShareQueue,
   isSessionOperationCurrent,
   secureDelete,
   secureDeleteChunked,
@@ -64,6 +67,18 @@ const {
 } = module.exports;
 
 const pending = (clientIntakeId, extra = {}) => ({ clientIntakeId, rawText: '', ...extra });
+const fullPending = (clientIntakeId, receivedAt, extra = {}) => ({
+  clientIntakeId,
+  contentFingerprint: 'a'.repeat(64),
+  receivedAt,
+  rawUrl: `https://example.test/${clientIntakeId}`,
+  rawTitle: clientIntakeId,
+  rawText: '',
+  sourceApp: 'test',
+  platform: 'ios',
+  receivedVia: 'test',
+  ...extra,
+});
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 const pngCrcTable = Array.from({ length: 256 }, (_, index) => {
@@ -297,6 +312,46 @@ test('post-replay refresh removes processed shares before publishing server read
   const serverPlaces = [{ placeId: 'resolved-place', folderId: 'folder-a', name: 'Resolved Place' }];
   assert.deepEqual(serverUnresolved.map((item) => item.intakeId), ['server-unresolved']);
   assert.deepEqual(serverPlaces.map((item) => item.placeId), ['resolved-place']);
+});
+test('pending share TTL keeps just-before-boundary payloads and expires exact-boundary payloads', () => {
+  const now = 1_700_000_000_000;
+  const justFresh = fullPending('just-fresh', now - (24 * 60 * 60 * 1000) + 1);
+  const exactBoundary = fullPending('exact-boundary', now - (24 * 60 * 60 * 1000));
+  assert.equal(isPendingShareExpired(justFresh, now), false);
+  assert.equal(isPendingShareExpired(exactBoundary, now), true);
+  assert.deepEqual(updatePendingShareQueue([justFresh, exactBoundary], (current) => current, now).map((item) => item.clientIntakeId), ['just-fresh']);
+});
+
+test('pending share restore and write paths filter expired payloads with matching receipts', () => {
+  const now = 1_700_000_000_000;
+  const expiredStored = fullPending('expired-stored', now - (24 * 60 * 60 * 1000));
+  const freshStored = fullPending('fresh-stored', now - 1000);
+  const expiredCurrent = fullPending('expired-current', now - (24 * 60 * 60 * 1000) - 1);
+  const freshCurrent = fullPending('fresh-current', now - 2000);
+  const restored = restorePendingShareQueue(
+    [expiredStored, freshStored],
+    [expiredCurrent, freshCurrent],
+    { 'native:expired-stored': 'expired-stored', 'native:fresh-stored': 'fresh-stored' },
+    { 'native:expired-current': 'expired-current', 'native:fresh-current': 'fresh-current' },
+    now,
+  );
+  assert.deepEqual(plain(restored.items.map((item) => item.clientIntakeId)), ['fresh-stored', 'fresh-current']);
+  assert.deepEqual(plain(restored.receipts), { 'native:fresh-stored': 'fresh-stored', 'native:fresh-current': 'fresh-current' });
+
+  const written = updatePendingShareQueue([expiredCurrent, freshCurrent], (current) => [...current, expiredStored, freshStored], now);
+  assert.deepEqual(plain(written.map((item) => item.clientIntakeId)), ['fresh-current', 'fresh-stored']);
+  assert.deepEqual(
+    plain(filterPendingShareReceipts({ expired: 'expired-current', current: 'fresh-current', stored: 'fresh-stored' }, written)),
+    { current: 'fresh-current', stored: 'fresh-stored' },
+  );
+});
+
+test('pending share replay signature excludes expired payloads', () => {
+  const now = 1_700_000_000_000;
+  const expired = fullPending('expired', now - (24 * 60 * 60 * 1000), { userId: 'user-a', intendedFolderId: 'folder-a' });
+  const fresh = fullPending('fresh', now - 1, { userId: 'user-a', intendedFolderId: 'folder-a' });
+  assert.equal(isPendingShareReplayable(expired, 'user-a', 'folder-a', now), false);
+  assert.equal(pendingShareReplaySignature([expired, fresh], 'user-a', 'folder-a', now), 'fresh');
 });
 
 test('corrupt chunk metadata can be reset and rewritten', async () => {

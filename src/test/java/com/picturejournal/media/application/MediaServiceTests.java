@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.picturejournal.collaboration.application.FileCollaborationStore;
 import com.picturejournal.collaboration.domain.Folder;
 import com.picturejournal.collaboration.domain.FolderMembership;
+import com.picturejournal.folder.application.FolderCapabilityPolicy;
 import com.picturejournal.folder.domain.FolderType;
 import com.picturejournal.media.domain.MediaAsset;
 import com.picturejournal.shared.error.DomainException;
@@ -53,6 +54,7 @@ class MediaServiceTests {
     private UUID ownerId;
     private UUID folderId;
     private FileCollaborationStore collaborationStore;
+    private RecordingFolderCapabilityPolicy folderCapabilityPolicy;
 
     @BeforeEach
     void setUp() {
@@ -62,10 +64,12 @@ class MediaServiceTests {
         folderId = UUID.randomUUID();
         collaborationStore.saveFolder(Folder.create(folderId, FolderType.PHOTO_DIARY, "Diary", null, NOW));
         collaborationStore.saveMembership(FolderMembership.owner(folderId, ownerId, NOW));
+        folderCapabilityPolicy = new RecordingFolderCapabilityPolicy();
         mediaService = new MediaService(
                 new FileMediaAssetStore(objectMapper, tempDir.resolve("media")),
                 new ExifMetadataExtractor(objectMapper),
-                collaborationStore);
+                collaborationStore,
+                folderCapabilityPolicy);
     }
 
     @Test
@@ -75,10 +79,21 @@ class MediaServiceTests {
                 () -> mediaService.uploadDirect(ownerId, folderId, (org.springframework.web.multipart.MultipartFile) null));
         assertEquals("INVALID_ARGUMENT", nullFile.getErrorCode().name());
 
+        folderCapabilityPolicy.deny = true;
         DomainException unauthorized = assertThrows(
                 DomainException.class,
                 () -> mediaService.uploadDirect(UUID.randomUUID(), folderId, imageFile()));
-        assertEquals("FORBIDDEN", unauthorized.getErrorCode().name());
+        assertEquals("FOLDER_WRITE_NOT_ALLOWED", unauthorized.getErrorCode().name());
+    }
+
+    @Test
+    void uploadAuthorizesFolderWriteThroughCapabilityPolicy() {
+        MediaAsset uploaded = mediaService.uploadDirect(ownerId, folderId, imageFile());
+
+        assertEquals(ownerId, folderCapabilityPolicy.lastActorId);
+        assertEquals(folderId, folderCapabilityPolicy.lastFolderId);
+        assertEquals(1, folderCapabilityPolicy.invocations);
+        assertEquals(folderId, uploaded.intendedFolderId());
     }
 
     @Test
@@ -278,6 +293,7 @@ class MediaServiceTests {
                 store,
                 new ExifMetadataExtractor(new ObjectMapper().findAndRegisterModules()),
                 collaborationStore,
+                folderCapabilityPolicy,
                 Clock.fixed(now, ZoneOffset.UTC));
     }
 
@@ -344,6 +360,22 @@ class MediaServiceTests {
         }
     }
 
+    private static final class RecordingFolderCapabilityPolicy implements FolderCapabilityPolicy {
+        private UUID lastActorId;
+        private UUID lastFolderId;
+        private int invocations;
+        private boolean deny;
+
+        @Override
+        public void assertCanWriteToFolder(UUID actorId, UUID folderId) {
+            lastActorId = actorId;
+            lastFolderId = folderId;
+            invocations++;
+            if (deny) {
+                throw FolderCapabilityPolicy.folderWriteNotAllowed(actorId, folderId);
+            }
+        }
+    }
     private static class RecordingStore implements MediaAssetStore {
         private MediaAsset asset;
         private int successfulCommits;

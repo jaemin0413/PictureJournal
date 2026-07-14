@@ -1,7 +1,8 @@
 package com.picturejournal.media.application;
 
 import com.picturejournal.collaboration.application.CollaborationStore;
-import com.picturejournal.folder.domain.FolderRole;
+import com.picturejournal.collaboration.application.FolderCapabilityPolicyImpl;
+import com.picturejournal.folder.application.FolderCapabilityPolicy;
 import com.picturejournal.folder.domain.FolderType;
 import com.picturejournal.media.domain.MediaAsset;
 import com.picturejournal.shared.error.DomainException;
@@ -37,14 +38,37 @@ public class MediaService {
     private final MediaAssetStore mediaAssetStore;
     private final CollaborationStore collaborationStore;
     private final ExifMetadataExtractor exifMetadataExtractor;
+    private final FolderCapabilityPolicy folderCapabilityPolicy;
     private final Clock clock;
 
     @Autowired
     public MediaService(
             MediaAssetStore mediaAssetStore,
             ExifMetadataExtractor exifMetadataExtractor,
+            CollaborationStore collaborationStore,
+            FolderCapabilityPolicy folderCapabilityPolicy) {
+        this(mediaAssetStore, exifMetadataExtractor, collaborationStore, folderCapabilityPolicy, Clock.systemUTC());
+    }
+
+    public MediaService(
+            MediaAssetStore mediaAssetStore,
+            ExifMetadataExtractor exifMetadataExtractor,
             CollaborationStore collaborationStore) {
-        this(mediaAssetStore, exifMetadataExtractor, collaborationStore, Clock.systemUTC());
+        this(mediaAssetStore, exifMetadataExtractor, collaborationStore,
+                new FolderCapabilityPolicyImpl(collaborationStore), Clock.systemUTC());
+    }
+
+    public MediaService(
+            MediaAssetStore mediaAssetStore,
+            ExifMetadataExtractor exifMetadataExtractor,
+            CollaborationStore collaborationStore,
+            FolderCapabilityPolicy folderCapabilityPolicy,
+            Clock clock) {
+        this.mediaAssetStore = Objects.requireNonNull(mediaAssetStore, "mediaAssetStore must not be null");
+        this.exifMetadataExtractor = Objects.requireNonNull(exifMetadataExtractor, "exifMetadataExtractor must not be null");
+        this.collaborationStore = Objects.requireNonNull(collaborationStore, "collaborationStore must not be null");
+        this.folderCapabilityPolicy = Objects.requireNonNull(folderCapabilityPolicy, "folderCapabilityPolicy must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     public MediaService(
@@ -52,10 +76,8 @@ public class MediaService {
             ExifMetadataExtractor exifMetadataExtractor,
             CollaborationStore collaborationStore,
             Clock clock) {
-        this.mediaAssetStore = Objects.requireNonNull(mediaAssetStore, "mediaAssetStore must not be null");
-        this.exifMetadataExtractor = Objects.requireNonNull(exifMetadataExtractor, "exifMetadataExtractor must not be null");
-        this.collaborationStore = Objects.requireNonNull(collaborationStore, "collaborationStore must not be null");
-        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this(mediaAssetStore, exifMetadataExtractor, collaborationStore,
+                new FolderCapabilityPolicyImpl(collaborationStore), clock);
     }
 
     public MediaAsset uploadDirect(UUID actorId, UUID intendedFolderId, MultipartFile file) {
@@ -81,11 +103,7 @@ public class MediaService {
         if (folder.type() != FolderType.PHOTO_DIARY) {
             throw invalidArgument("Media uploads are only allowed for PHOTO_DIARY folders.");
         }
-        var membership = collaborationStore.findMembership(intendedFolderId, actorId)
-                .orElseThrow(() -> new DomainException(ErrorCode.FORBIDDEN, "Only folder members can upload media."));
-        if (membership.role() == FolderRole.VIEWER) {
-            throw new DomainException(ErrorCode.FORBIDDEN, "Viewer members cannot upload media.");
-        }
+        folderCapabilityPolicy.assertCanWriteToFolder(actorId, intendedFolderId);
         MultipartFile file = files.getFirst();
         if (file.isEmpty()) {
             throw invalidArgument("file is required.");
