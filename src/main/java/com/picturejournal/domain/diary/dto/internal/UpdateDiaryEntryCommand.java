@@ -1,0 +1,26 @@
+package com.picturejournal.domain.diary.dto.internal;
+
+import java.time.Instant;
+import java.util.List;
+
+/**
+ * 사진 일기 계층 사이에서 값을 전달하는 UpdateDiaryEntryCommand 내부 DTO다.
+ * controller, service, repository 사이의 전달 값을 명시적으로 묶는다.
+ *
+ * @param title 공유 원문 또는 일기의 제목
+ * @param body 사진 일기의 본문
+ * @param placeName 사진 일기에 기록할 장소 이름
+ * @param latitude 위치의 위도 값
+ * @param longitude 위치의 경도 값
+ * @param capturedAt 사진이 촬영되었거나 일기로 기록된 기준 시각
+ * @param tags 사진 일기를 분류하는 태그 목록
+ */
+public record UpdateDiaryEntryCommand(
+        String title,
+        String body,
+        String placeName,
+        Double latitude,
+        Double longitude,
+        Instant capturedAt,
+        List<String> tags) {
+}
