@@ -1303,6 +1303,14 @@ export default function App() {
           <Text style={styles.title}>{screens.find((item) => item.key === screen)?.label}</Text>
           {developmentBuild && <Text style={styles.description}>API: {apiBaseUrl} · {session ? `${session.user.displayName} signed in` : 'signed out'} · Diary: {diaryFolder?.name ?? 'none'} · Places: {placesFolder?.name ?? 'none'}</Text>}
           <Text style={styles.status}>{busy ? 'Working… ' : ''}{status}</Text>
+          {developmentBuild && (
+            <View accessible={false}>
+              <Text testID="share-auth-state">{session ? 'authenticated' : 'unauthenticated'}</Text>
+              <Text testID="share-queue-count">{pendingShares.length}</Text>
+              <Text testID="share-queue-payload">{pendingShares.map((item) => item.rawText).join('\n')}</Text>
+              <Text testID="share-native-receipt-count">{Object.keys(pendingShareReceiptsRef.current).length}</Text>
+            </View>
+          )}
         </View>
 
         {screen === 'auth' && (

@@ -1,0 +1,71 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* AppDelegate.swift */; };
+		A10000000000000000000002 /* ShareFixtureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* ShareFixtureUITests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A10000000000000000000011 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A10000000000000000000012 /* ShareFixtureUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareFixtureUITests.swift; sourceTree = "<group>"; };
+		A10000000000000000000021 /* ShareFixture.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ShareFixture.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000022 /* ShareFixtureUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ShareFixtureUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A10000000000000000000031 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A10000000000000000000032 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A10000000000000000000041 = {isa = PBXGroup; children = (A10000000000000000000042 /* ShareFixture */, A10000000000000000000043 /* ShareFixtureUITests */, A10000000000000000000044 /* Products */); sourceTree = "<group>"; };
+		A10000000000000000000042 /* ShareFixture */ = {isa = PBXGroup; children = (A10000000000000000000011 /* AppDelegate.swift */); path = ShareFixture; sourceTree = "<group>"; };
+		A10000000000000000000043 /* ShareFixtureUITests */ = {isa = PBXGroup; children = (A10000000000000000000012 /* ShareFixtureUITests.swift */); path = ShareFixtureUITests; sourceTree = "<group>"; };
+		A10000000000000000000044 /* Products */ = {isa = PBXGroup; children = (A10000000000000000000021 /* ShareFixture.app */, A10000000000000000000022 /* ShareFixtureUITests.xctest */); name = Products; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A10000000000000000000051 /* ShareFixture */ = {isa = PBXNativeTarget; buildConfigurationList = A10000000000000000000061 /* Build configuration list for PBXNativeTarget "ShareFixture" */; buildPhases = (A10000000000000000000071 /* Sources */, A10000000000000000000031 /* Frameworks */, A10000000000000000000072 /* Resources */); buildRules = (); dependencies = (); name = ShareFixture; productName = ShareFixture; productReference = A10000000000000000000021 /* ShareFixture.app */; productType = "com.apple.product-type.application"; };
+		A10000000000000000000052 /* ShareFixtureUITests */ = {isa = PBXNativeTarget; buildConfigurationList = A10000000000000000000062 /* Build configuration list for PBXNativeTarget "ShareFixtureUITests" */; buildPhases = (A10000000000000000000073 /* Sources */, A10000000000000000000032 /* Frameworks */, A10000000000000000000074 /* Resources */); buildRules = (); dependencies = (A10000000000000000000081 /* PBXTargetDependency */); name = ShareFixtureUITests; productName = ShareFixtureUITests; productReference = A10000000000000000000022 /* ShareFixtureUITests.xctest */; productType = "com.apple.product-type.bundle.ui-testing"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A10000000000000000000091 /* Project object */ = {isa = PBXProject; attributes = { LastUpgradeCheck = 1500; TargetAttributes = { A10000000000000000000052 = { TestTargetID = A10000000000000000000051; }; }; }; buildConfigurationList = A10000000000000000000063 /* Build configuration list for PBXProject "ShareFixture" */; compatibilityVersion = "Xcode 14.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base); mainGroup = A10000000000000000000041; productRefGroup = A10000000000000000000044 /* Products */; projectDirPath = ""; projectRoot = ""; targets = (A10000000000000000000051 /* ShareFixture */, A10000000000000000000052 /* ShareFixtureUITests */); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A10000000000000000000072 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A10000000000000000000074 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A10000000000000000000071 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000001 /* AppDelegate.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+		A10000000000000000000073 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A10000000000000000000002 /* ShareFixtureUITests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A10000000000000000000081 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A10000000000000000000051 /* ShareFixture */; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A10000000000000000000101 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; SWIFT_VERSION = 5.0; }; name = Debug; };
+		A10000000000000000000102 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { CLANG_ENABLE_MODULES = YES; SWIFT_VERSION = 5.0; }; name = Release; };
+		A10000000000000000000103 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_APPICON_NAME = ""; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "Share Fixture"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.picturejournal.sharefixture; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphonesimulator iphoneos"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Debug; };
+		A10000000000000000000104 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { ASSETCATALOG_COMPILER_APPICON_NAME = ""; CURRENT_PROJECT_VERSION = 1; GENERATE_INFOPLIST_FILE = YES; INFOPLIST_KEY_CFBundleDisplayName = "Share Fixture"; INFOPLIST_KEY_UILaunchScreen_Generation = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = com.picturejournal.sharefixture; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SUPPORTED_PLATFORMS = "iphonesimulator iphoneos"; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; }; name = Release; };
+		A10000000000000000000105 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.0; PRODUCT_BUNDLE_IDENTIFIER = com.picturejournal.sharefixtureUITests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; TEST_TARGET_NAME = ShareFixture; }; name = Debug; };
+		A10000000000000000000106 /* Release */ = {isa = XCBuildConfiguration; buildSettings = { GENERATE_INFOPLIST_FILE = YES; IPHONEOS_DEPLOYMENT_TARGET = 16.0; PRODUCT_BUNDLE_IDENTIFIER = com.picturejournal.sharefixtureUITests; PRODUCT_NAME = "$(TARGET_NAME)"; SDKROOT = iphoneos; SWIFT_VERSION = 5.0; TEST_TARGET_NAME = ShareFixture; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A10000000000000000000061 /* Build configuration list for PBXNativeTarget "ShareFixture" */ = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000103 /* Debug */, A10000000000000000000104 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A10000000000000000000062 /* Build configuration list for PBXNativeTarget "ShareFixtureUITests" */ = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000105 /* Debug */, A10000000000000000000106 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A10000000000000000000063 /* Build configuration list for PBXProject "ShareFixture" */ = {isa = XCConfigurationList; buildConfigurations = (A10000000000000000000101 /* Debug */, A10000000000000000000102 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A10000000000000000000091 /* Project object */;
+}

@@ -81,7 +81,7 @@ jobs:
             apps/mobile/dist-web
 
   ios-simulator-proof:
-    name: iOS simulator build proof
+    name: iOS Share Sheet E2E proof
     runs-on: macos-14
     defaults:
       run:
@@ -94,195 +94,60 @@ jobs:
           cache: npm
           cache-dependency-path: apps/mobile/package-lock.json
       - run: npm ci
-      - run: npm test
-      - run: npm run typecheck
       - run: npm run ios:prebuild
       - name: Install CocoaPods dependencies
         run: pod install
         working-directory: apps/mobile/ios
-      - name: Build iOS app for simulator
+      - name: Build Picture Journal for simulator
         run: |
           set -euo pipefail
           mkdir -p ../../artifacts/mobile
-          shopt -s nullglob
-          workspaces=(ios/*.xcworkspace)
-          if [ ${#workspaces[@]} -eq 0 ]; then
-            echo "No .xcworkspace found under apps/mobile/ios" >&2
-            exit 1
-          fi
-          WORKSPACE="${workspaces[0]}"
+          WORKSPACE="$(echo ios/*.xcworkspace)"
           SCHEME="${WORKSPACE##*/}"
           SCHEME="${SCHEME%.xcworkspace}"
-          export SCHEME
-          xcodebuild -list -json -workspace "$WORKSPACE" | ruby -rjson -e 'schemes = JSON.parse(STDIN.read).dig("workspace", "schemes") || []; target = ENV.fetch("SCHEME"); abort("Missing expected app scheme: #{target}") unless schemes.include?(target)'
-          xcodebuild \
-            -workspace "$WORKSPACE" \
-            -scheme "$SCHEME" \
-            -configuration Debug \
-            -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' \
-            -derivedDataPath ios/build \
-            build > ../../artifacts/mobile/ios-simulator-build.log 2>&1
-      - name: Run iOS simulator share handoff smoke
+          xcodebuild -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' -derivedDataPath ios/build build | tee ../../artifacts/mobile/ios-simulator-build.log
+      - name: Boot simulator and install Picture Journal
+        run: |
+          set -euo pipefail
+          SIMULATOR_UDID="$(xcrun simctl list devices available -j | ruby -rjson -e 'devices = JSON.parse(STDIN.read).fetch("devices").values.flatten; device = devices.find { |candidate| candidate["name"] == "iPhone 15" && candidate["isAvailable"] }; abort("No available iPhone 15 simulator found") unless device; puts device.fetch("udid")')"
+          xcrun simctl boot "$SIMULATOR_UDID" || true
+          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+          APP_PATH="$(echo ios/build/Build/Products/Debug-iphonesimulator/*.app)"
+          xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
+          printf '%s\n' "$SIMULATOR_UDID" > ../../artifacts/mobile/ios-simulator-udid.txt
+      - name: Start Metro and run fixture Share Sheet UI test
         run: |
           set -euo pipefail
           mkdir -p ../../artifacts/mobile
-          SMOKE_LOG=../../artifacts/mobile/ios-share-smoke.log
-          : > "$SMOKE_LOG"
-          exec > >(tee -a "$SMOKE_LOG") 2>&1
-          set -x
-          METRO_PID=''
-          PREFS_ERROR_TMP=''
-          cleanup() {
-            local status=$?
-            local metro_status=0
-            trap - EXIT
-            if [[ -n "$METRO_PID" ]]; then
-              if kill -0 "$METRO_PID" 2>/dev/null; then
-                kill "$METRO_PID" 2>/dev/null || true
-                wait "$METRO_PID" 2>/dev/null || true
-              else
-                if wait "$METRO_PID" 2>/dev/null; then
-                  metro_status=0
-                else
-                  metro_status=$?
-                fi
-                if [[ "$status" -eq 0 ]]; then
-                  if [[ "$metro_status" -eq 0 ]]; then status=1; else status="$metro_status"; fi
-                fi
-              fi
-            fi
-            if [[ "$status" -ne 0 && -n "$PREFS_ERROR_TMP" && -s "$PREFS_ERROR_TMP" ]]; then
-              cp "$PREFS_ERROR_TMP" ../../artifacts/mobile/ios-share-preferences-failure.log || true
-            fi
-            if [[ -n "$PREFS_ERROR_TMP" ]]; then rm -f "$PREFS_ERROR_TMP" || true; fi
-            exit "$status"
-          }
-          trap cleanup EXIT
+          SIMULATOR_UDID="$(< ../../artifacts/mobile/ios-simulator-udid.txt)"
           CI=1 npx expo start --dev-client --port 8081 > ../../artifacts/mobile/ios-metro.log 2>&1 &
           METRO_PID=$!
-          for attempt in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:8081/status && break
-            kill -0 "$METRO_PID"
-            sleep 2
-          done
+          trap 'kill "$METRO_PID" || true' EXIT
+          for attempt in $(seq 1 30); do curl -fsS http://127.0.0.1:8081/status && break; sleep 2; done
           curl -fsS http://127.0.0.1:8081/status
-          SIMULATOR_UDID="$(xcrun simctl list devices available -j | ruby -rjson -e 'devices = JSON.parse(STDIN.read).fetch("devices").values.flatten; device = devices.find { |candidate| candidate["name"] == "iPhone 15" && candidate["isAvailable"] }; abort("No available iPhone 15 simulator found") unless device; puts device.fetch("udid")')"
-          if ! BOOT_OUTPUT="$(xcrun simctl boot "$SIMULATOR_UDID" 2>&1)"; then
-            printf '%s\n' "$BOOT_OUTPUT"
-            xcrun simctl list devices | grep -F "$SIMULATOR_UDID" | grep -q '(Booted)'
-          fi
-          xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-          APP_PATH="$(find ios/build/Build/Products/Debug-iphonesimulator -maxdepth 1 -type d -name '*.app' ! -name '*ShareExtension*' -print -quit)"
-          test -n "$APP_PATH"
-          xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
           xcrun simctl launch "$SIMULATOR_UDID" com.picturejournal.mobile
-          GROUP_CONTAINER=''
-          for attempt in $(seq 1 30); do
-            if GROUP_CONTAINER="$(xcrun simctl get_app_container "$SIMULATOR_UDID" com.picturejournal.mobile group.com.picturejournal.mobile 2>> "$SMOKE_LOG")"; then
-              break
-            fi
-            sleep 2
-          done
-          test -n "$GROUP_CONTAINER"
-          bundle_ready=0
           for attempt in $(seq 1 60); do
-            if python3 - ../../artifacts/mobile/ios-metro.log <<'PY'
-          import pathlib
-          import sys
-
-          log = pathlib.Path(sys.argv[1])
-          raise SystemExit(0 if log.exists() and "iOS Bundled" in log.read_text(errors="replace") else 1)
-          PY
-            then
-              bundle_ready=1
+            if ruby -e 'exit(File.exist?(ARGV[0]) && File.read(ARGV[0]).include?("iOS Bundled") ? 0 : 1)' ../../artifacts/mobile/ios-metro.log; then
               break
             fi
-            kill -0 "$METRO_PID"
+            if [ "$attempt" -eq 60 ]; then
+              echo "Metro did not bundle the iOS dev client within 120 seconds."
+              exit 1
+            fi
             sleep 2
           done
-          test "$bundle_ready" -eq 1
           xcrun simctl terminate "$SIMULATOR_UDID" com.picturejournal.mobile
-          PREFS_PATH="$GROUP_CONTAINER/Library/Preferences/group.com.picturejournal.mobile"
-          PREFS_PLIST="$PREFS_PATH.plist"
-          RUN_NONCE="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
-          SENTINEL_VALUE="ci-domain-readable-${RUN_NONCE}"
-          SHARE_PAYLOAD="Cafe Onion GitHub Actions iOS nonce-${RUN_NONCE}"
-          python3 - "$PREFS_PLIST" "$SENTINEL_VALUE" "$SHARE_PAYLOAD" <<'PY'
-          import os
-          import plistlib
-          import sys
-          import tempfile
-
-          path, sentinel, share_payload = sys.argv[1:4]
-          preferences = {}
-          if os.path.exists(path):
-              with open(path, "rb") as preferences_file:
-                  preferences = plistlib.load(preferences_file)
-          preferences["picturejournalReceiptSentinel"] = sentinel
-          preferences["picturejournalShareKey"] = [share_payload]
-          os.makedirs(os.path.dirname(path), exist_ok=True)
-          descriptor, temporary_path = tempfile.mkstemp(
-              dir=os.path.dirname(path),
-              prefix=".picturejournal.",
-          )
-          try:
-              with os.fdopen(descriptor, "wb") as preferences_file:
-                  plistlib.dump(preferences, preferences_file)
-              os.replace(temporary_path, path)
-          finally:
-              if os.path.exists(temporary_path):
-                  os.unlink(temporary_path)
-          PY
-          test -f "$PREFS_PLIST"
-          test "$(plutil -extract picturejournalReceiptSentinel raw -o - "$PREFS_PLIST")" = "$SENTINEL_VALUE"
-          test "$(plutil -extract picturejournalShareKey.0 raw -o - "$PREFS_PLIST")" = "$SHARE_PAYLOAD"
-          plutil -p "$PREFS_PLIST" > ../../artifacts/mobile/ios-share-preferences-before.txt
-          xcrun simctl spawn "$SIMULATOR_UDID" killall cfprefsd || true
-          xcrun simctl spawn "$SIMULATOR_UDID" defaults import group.com.picturejournal.mobile "$PREFS_PLIST"
-          xcrun simctl launch "$SIMULATOR_UDID" com.picturejournal.mobile
-          sleep 10
-          xcrun simctl openurl "$SIMULATOR_UDID" 'picturejournal://dataUrl=picturejournalShareKey#text'
-          PREFS_ERROR_TMP="$(mktemp /tmp/picturejournal-prefs.XXXXXX)"
-          : > "$PREFS_ERROR_TMP"
-          share_received=0
-          for attempt in $(seq 1 60); do
-            if python3 - "$PREFS_PLIST" "$SENTINEL_VALUE" 2>> "$PREFS_ERROR_TMP" <<'PY'
-          import plistlib
-          import sys
-
-          path, sentinel = sys.argv[1:3]
-          with open(path, "rb") as preferences_file:
-              preferences = plistlib.load(preferences_file)
-          if preferences.get("picturejournalReceiptSentinel") != sentinel:
-              raise SystemExit(10)
-          if "picturejournalShareKey" in preferences:
-              raise SystemExit(11)
-          PY
-            then
-              plutil -p "$PREFS_PLIST" > ../../artifacts/mobile/ios-share-preferences-after.txt
-              share_received=1
-              break
-            else
-              preference_status=$?
-              if [[ "$preference_status" -ne 10 && "$preference_status" -ne 11 ]]; then
-                printf 'fatal plist verification failure (status=%s)\n' "$preference_status" >> "$PREFS_ERROR_TMP"
-                exit "$preference_status"
-              fi
-              printf 'attempt=%s plist state not ready (status=%s)\n' "$attempt" "$preference_status" >> "$PREFS_ERROR_TMP"
-            fi
-            kill -0 "$METRO_PID"
-            sleep 2
-          done
-          test "$share_received" -eq 1
-          kill -0 "$METRO_PID"
-          curl -fsS http://127.0.0.1:8081/status
-          test -s ../../artifacts/mobile/ios-share-preferences-after.txt
-          HANDOFF_RECEIPT="picturejournalShareKey consumed after durable app receipt [${RUN_NONCE}]"
-          printf '%s\n' "$HANDOFF_RECEIPT" > ../../artifacts/mobile/ios-share-handoff.txt
-          test "$(< ../../artifacts/mobile/ios-share-handoff.txt)" = "$HANDOFF_RECEIPT"
-          xcrun simctl io "$SIMULATOR_UDID" screenshot ../../artifacts/mobile/ios-share-receipt.png
-          node scripts/verify-png.mjs ../../artifacts/mobile/ios-share-receipt.png
+          xcodebuild -project ios-share-fixture/ShareFixture.xcodeproj -scheme ShareFixture -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -derivedDataPath ios-share-fixture/build -resultBundlePath ../../artifacts/mobile/ios-share-fixture.xcresult test | tee ../../artifacts/mobile/ios-share-fixture-test.log
+          if xcrun simctl spawn "$SIMULATOR_UDID" defaults read group.com.picturejournal.mobile > ../../artifacts/mobile/ios-app-group-preferences.txt; then
+            :
+          else
+            printf '%s\n' 'No app-group preferences domain exists.' >> ../../artifacts/mobile/ios-app-group-preferences.txt
+          fi
+          if ruby -e 'exit(File.read(ARGV.fetch(0)).include?("picturejournalShareKey") ? 0 : 1)' ../../artifacts/mobile/ios-app-group-preferences.txt; then
+            echo 'Stale picturejournalShareKey remains in the Picture Journal app-group preferences domain.'
+            exit 1
+          fi
+          xcrun xcresulttool get --path ../../artifacts/mobile/ios-share-fixture.xcresult --format json > ../../artifacts/mobile/ios-share-fixture-summary.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -290,9 +155,7 @@ jobs:
           path: |
             artifacts/mobile/ios-simulator-build.log
             artifacts/mobile/ios-metro.log
-            artifacts/mobile/ios-share-receipt.png
-            artifacts/mobile/ios-share-handoff.txt
-            artifacts/mobile/ios-share-preferences-before.txt
-            artifacts/mobile/ios-share-preferences-after.txt
-            artifacts/mobile/ios-share-preferences-failure.log
-            artifacts/mobile/ios-share-smoke.log
+            artifacts/mobile/ios-share-fixture-test.log
+            artifacts/mobile/ios-share-fixture-summary.json
+            artifacts/mobile/ios-app-group-preferences.txt
+            artifacts/mobile/ios-share-fixture.xcresult

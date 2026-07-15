@@ -42,6 +42,7 @@
       [
         "expo-share-intent",
         {
+          "iosShareExtensionName": "Picture Journal",
           "iosActivationRules": {
             "NSExtensionActivationSupportsText": true,
             "NSExtensionActivationSupportsWebURLWithMaxCount": 1,

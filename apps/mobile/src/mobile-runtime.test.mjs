@@ -115,9 +115,10 @@ const rgbaPng = (pixels) => {
   ]);
 };
 
-test('Expo config is strict JSON with one non-overlapping Android text filter', () => {
+test('Expo config fixes the iOS Share Sheet extension display name and Android text filter', () => {
   const config = JSON.parse(readFileSync(new URL('../app.json', import.meta.url), 'utf8'));
   const shareIntent = config.expo.plugins.find((plugin) => Array.isArray(plugin) && plugin[0] === 'expo-share-intent');
+  assert.equal(shareIntent[1].iosShareExtensionName, 'Picture Journal');
   assert.deepEqual(shareIntent[1].androidIntentFilters, ['text/*']);
 });
 
@@ -192,6 +193,43 @@ test('Android share verifier requires one complete exact filter and rejects misl
   const trailingText = inspectAndroidShareManifest(`${manifest(filter())}not-xml`);
   assert.equal(trailingText.status, 'failed');
   assert.ok(trailingText.parseError);
+});
+test('iOS Share Sheet fixture wiring exercises the real UI test and native receipt cleanup contracts', () => {
+  const workflow = readFileSync(new URL('../../../.github/workflows/mobile-share-proof.yml', import.meta.url), 'utf8');
+  const fixtureTests = readFileSync(new URL('../ios-share-fixture/ShareFixtureUITests/ShareFixtureUITests.swift', import.meta.url), 'utf8');
+  const fixtureProject = readFileSync(new URL('../ios-share-fixture/ShareFixture.xcodeproj/project.pbxproj', import.meta.url), 'utf8');
+
+  assert.match(
+    workflow,
+    /xcodebuild\s+-project\s+ios-share-fixture\/ShareFixture\.xcodeproj\s+-scheme\s+ShareFixture\b[^\n]*\btest\b/,
+    'The iOS proof must execute tests through the actual ShareFixture scheme.',
+  );
+  assert.match(workflow, /xcrun simctl spawn "\$SIMULATOR_UDID" defaults read group\.com\.picturejournal\.mobile/);
+  assert.match(workflow, /picturejournalShareKey/);
+  assert.match(workflow, /artifacts\/mobile\/ios-app-group-preferences\.txt/);
+  assert.doesNotMatch(workflow, /\bplistlib\b/, 'The proof must not synthesize fixture state with plistlib.');
+  assert.doesNotMatch(workflow, /\bdefaults\s+(?:import|write)\b/, 'The proof must not mutate native preferences.');
+  assert.doesNotMatch(workflow, /(?:defaults|plutil)[\s\S]{0,80}picturejournalShareKey[\s\S]{0,80}(?:write|insert|replace)/, 'The proof must not inject the native share receipt directly.');
+
+  assert.match(fixtureProject, /name = ShareFixtureUITests;[\s\S]*productType = "com\.apple\.product-type\.bundle\.ui-testing";/);
+  assert.match(fixtureProject, /ShareFixtureUITests\.swift in Sources/);
+  assert.match(fixtureProject, /TestTargetID = A10000000000000000000051;/);
+  assert.match(fixtureProject, /PRODUCT_BUNDLE_IDENTIFIER = com\.picturejournal\.sharefixture;/);
+  assert.doesNotMatch(fixtureProject, /CODE_SIGNING_(?:ALLOWED|REQUIRED) = NO/);
+
+  assert.ok(fixtureTests.includes('let coldPayload = "PictureJournal fixture cold \\(UUID().uuidString)"'));
+  assert.ok(fixtureTests.includes('let warmPayload = "PictureJournal fixture warm \\(UUID().uuidString)"'));
+  assert.match(fixtureTests, /share\(coldPayload\)[\s\S]*assertUnauthenticatedQueue\(in: pictureJournal, expectedPayloads: \[coldPayload\]\)/);
+  assert.match(fixtureTests, /share\(warmPayload\)[\s\S]*assertUnauthenticatedQueue\(in: pictureJournal, expectedPayloads: \[coldPayload, warmPayload\]\)/);
+  assert.match(fixtureTests, /share\(warmPayload\)[\s\S]*pictureJournal\.terminate\(\)[\s\S]*pictureJournal\.launch\(\)[\s\S]*assertUnauthenticatedQueue\(in: pictureJournal, expectedPayloads: \[coldPayload, warmPayload\]\)/);
+  assert.match(fixtureTests, /fixture\.buttons\["Picture Journal"\]/);
+  assert.doesNotMatch(fixtureTests, /PictureJournal"\]/);
+  assert.match(fixtureTests, /XCTAssertTrue\(authState\.waitForExistence\(timeout: 30\)/);
+  assert.match(fixtureTests, /XCTNSPredicateExpectation/);
+  assert.match(fixtureTests, /assertLabel\(queueCount, equals: String\(expectedPayloads\.count\)/);
+  assert.match(fixtureTests, /assertLabel\(queuePayloads, equals: expectedPayloadLabel/);
+  assert.match(fixtureTests, /assertNoNativeReceipt\(in: pictureJournal\)/);
+  assert.match(fixtureTests, /assertLabel\(receiptCount, equals: "0"/);
 });
 test('PNG verifier compares visible pixels and rejects hidden RGB differences', () => {
   const transparentRgbNoise = rgbaPng([
