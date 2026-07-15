@@ -82,7 +82,7 @@ final class ShareFixtureUITests: XCTestCase {
             predicate: NSPredicate(format: "label == %@", expectedLabel),
             object: element
         )
-        XCTAssertEqual(wait(for: [expectation], timeout: 30), .completed, message)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 30), .completed, message)
         XCTAssertEqual(element.label, expectedLabel, message)
     }
 }
