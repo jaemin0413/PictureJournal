@@ -933,7 +933,7 @@ export default function App() {
       const rawUrl = text(parsed.queryParams?.url);
       const rawTitle = text(parsed.queryParams?.title);
       const rawText = text(parsed.queryParams?.text);
-      if (text(parsed.queryParams?.dataUrl)) {
+      if (url.includes('://dataUrl=')) {
         await getShareIntent(url);
         return;
       }
