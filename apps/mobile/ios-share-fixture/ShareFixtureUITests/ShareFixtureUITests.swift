@@ -49,14 +49,28 @@ final class ShareFixtureUITests: XCTestCase {
         XCTAssertEqual(fixturePayload.label, payload, "Fixture must expose the unique payload it puts on UIActivityViewController.")
         fixture.buttons["share-fixture-text"].tap()
 
+        selectPictureJournalActivity(in: fixture)
         let pictureJournalActivity = XCUIApplication(bundleIdentifier: pictureJournalBundleID)
-        let activity = fixture.buttons["Picture Journal"]
+        XCTAssertTrue(pictureJournalActivity.wait(for: .runningForeground, timeout: 15), "Selecting the extension must open Picture Journal.")
+    }
+
+    private func selectPictureJournalActivity(in fixture: XCUIApplication) {
+        let activityPredicate = NSPredicate(format: "label == %@", "Picture Journal")
+        var activity = fixture.descendants(matching: .any).matching(activityPredicate).firstMatch
+        if !activity.waitForExistence(timeout: 3) {
+            let more = fixture.cells["More"]
+            guard more.waitForExistence(timeout: 5) else {
+                XCTFail("The Share Sheet must expose Picture Journal directly or through More. UI hierarchy:\n\(fixture.debugDescription)")
+                return
+            }
+            more.tap()
+            activity = fixture.descendants(matching: .any).matching(activityPredicate).firstMatch
+        }
         guard activity.waitForExistence(timeout: 10) else {
             XCTFail("Picture Journal share extension must be selectable from the real Share Sheet. UI hierarchy:\n\(fixture.debugDescription)")
             return
         }
         activity.tap()
-        XCTAssertTrue(pictureJournalActivity.wait(for: .runningForeground, timeout: 15), "Selecting the extension must open Picture Journal.")
     }
 
     private func assertUnauthenticatedQueue(in app: XCUIApplication, expectedPayloads: [String]) {

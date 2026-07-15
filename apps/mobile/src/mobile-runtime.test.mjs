@@ -222,7 +222,8 @@ test('iOS Share Sheet fixture wiring exercises the real UI test and native recei
   assert.match(fixtureTests, /share\(coldPayload\)[\s\S]*assertUnauthenticatedQueue\(in: pictureJournal, expectedPayloads: \[coldPayload\]\)/);
   assert.match(fixtureTests, /share\(warmPayload\)[\s\S]*assertUnauthenticatedQueue\(in: pictureJournal, expectedPayloads: \[coldPayload, warmPayload\]\)/);
   assert.match(fixtureTests, /share\(warmPayload\)[\s\S]*pictureJournal\.terminate\(\)[\s\S]*pictureJournal\.launch\(\)[\s\S]*assertUnauthenticatedQueue\(in: pictureJournal, expectedPayloads: \[coldPayload, warmPayload\]\)/);
-  assert.match(fixtureTests, /fixture\.buttons\["Picture Journal"\]/);
+  assert.match(fixtureTests, /NSPredicate\(format: "label == %@", "Picture Journal"\)/);
+  assert.match(fixtureTests, /fixture\.cells\["More"\]/);
   assert.doesNotMatch(fixtureTests, /PictureJournal"\]/);
   assert.match(fixtureTests, /XCTAssertTrue\(authState\.waitForExistence\(timeout: 30\)/);
   assert.match(fixtureTests, /XCTNSPredicateExpectation/);
