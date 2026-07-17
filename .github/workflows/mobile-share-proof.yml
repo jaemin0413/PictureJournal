@@ -2,84 +2,8 @@ name: mobile-share-proof
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'apps/mobile/**'
-      - '.github/workflows/mobile-share-proof.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'apps/mobile/**'
-      - '.github/workflows/mobile-share-proof.yml'
 
 jobs:
-  android-share-proof:
-    name: Android share intent proof
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/mobile
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: apps/mobile/package-lock.json
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - name: Enable KVM group perms
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - run: npm ci
-      - run: npm test
-      - run: npm run typecheck
-      - run: npm run web:export
-      - run: npm run android:prebuild
-      - name: Verify Android share intent filters
-        run: node scripts/verify-android-share-intent.mjs
-      - name: Build Android debug APK
-        run: ./gradlew assembleDebug
-        env:
-          GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g
-        working-directory: apps/mobile/android
-      - name: Run Android emulator share smoke
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 34
-          target: google_apis
-          arch: x86_64
-          profile: pixel_6
-          disable-animations: false
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -no-metrics
-          working-directory: apps/mobile
-          script: bash scripts/run-android-share-smoke.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: android-share-proof
-          path: |
-            apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk
-            artifacts/mobile/android-activity-dump.txt
-            artifacts/mobile/android-resolved-share-activity.txt
-            artifacts/mobile/android-share-start.txt
-            artifacts/mobile/android-share-logcat.txt
-            artifacts/mobile/android-metro.log
-            artifacts/mobile/android-secure-store-files.txt
-            artifacts/mobile/android-share-receipt.png
-            artifacts/mobile/android-share-intent-manifest-check.json
-            artifacts/mobile/android-failure-activity-dump.txt
-            artifacts/mobile/android-failure-logcat.txt
-            artifacts/mobile/android-failure-secure-store-files.txt
-            artifacts/mobile/android-failure-screenshot.png
-            apps/mobile/dist-web
-
   ios-simulator-proof:
     name: iOS Share Sheet E2E proof
     runs-on: macos-14
@@ -93,69 +17,136 @@ jobs:
           node-version: '20'
           cache: npm
           cache-dependency-path: apps/mobile/package-lock.json
-      - run: npm ci
-      - run: npm run ios:prebuild
-      - name: Install CocoaPods dependencies
-        run: pod install
-        working-directory: apps/mobile/ios
-      - name: Build Picture Journal for simulator
+      - name: Require first dispatch attempt
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = '1'
+          mkdir -p ../../artifacts/mobile
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage dispatch-attempt --status passed
+      - name: Install JavaScript dependencies without lifecycle scripts
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          ./node_modules/.bin/patch-package
+          node scripts/audit-ios-share-workflow.mjs --output ../../artifacts/mobile/ios-share-workflow-audit.json
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage workflow-audit --status passed
+          npm run typecheck -- --pretty false
+          npm run ios-share:test
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage focused-checks --status passed
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage dependency-install --status passed
+      - name: Generate two independent clean iOS projects and hard-gate semantics
         run: |
           set -euo pipefail
           mkdir -p ../../artifacts/mobile
-          WORKSPACE="$(echo ios/*.xcworkspace)"
-          SCHEME="${WORKSPACE##*/}"
-          SCHEME="${SCHEME%.xcworkspace}"
-          xcodebuild -workspace "$WORKSPACE" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' -derivedDataPath ios/build build | tee ../../artifacts/mobile/ios-simulator-build.log
-      - name: Boot simulator and install Picture Journal
+          npx --no-install expo prebuild --platform ios --no-install --clean
+          node scripts/verify-ios-share-extension.mjs > ../../artifacts/mobile/ios-prebuild-first-verifier.json
+          ditto -c -k --sequesterRsrc --keepParent ios ../../artifacts/mobile/ios-prebuild-first-project.zip
+          rm -rf ios
+          npx --no-install expo prebuild --platform ios --no-install --clean
+          node scripts/verify-ios-share-extension.mjs > ../../artifacts/mobile/ios-prebuild-second-verifier.json
+          ditto -c -k --sequesterRsrc --keepParent ios ../../artifacts/mobile/ios-prebuild-second-project.zip
+          FIRST_FINGERPRINT="$(node -p 'require(process.argv[1]).semanticFingerprint' ../../artifacts/mobile/ios-prebuild-first-verifier.json)"
+          SECOND_FINGERPRINT="$(node -p 'require(process.argv[1]).semanticFingerprint' ../../artifacts/mobile/ios-prebuild-second-verifier.json)"
+          test "$FIRST_FINGERPRINT" = "$SECOND_FINGERPRINT"
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage ios-project-structure --status passed --sha256 "$SECOND_FINGERPRINT"
+      - name: Install pods from the generated iOS project
+        run: |
+          set -euo pipefail
+          pod install --project-directory=ios | tee ../../artifacts/mobile/ios-pod-install.log
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage pod-install --status passed
+      - name: Build host and capture target graph and settings
+        run: |
+          set -euo pipefail
+          WORKSPACE='ios/PictureJournal.xcworkspace'
+          test -d "$WORKSPACE"
+          xcodebuild -workspace "$WORKSPACE" -list -json > ../../artifacts/mobile/ios-target-graph.json
+          xcodebuild -project ios/PictureJournal.xcodeproj -target PictureJournal -configuration Debug -sdk iphonesimulator -showBuildSettings > ../../artifacts/mobile/ios-host-build-settings.txt
+          xcodebuild -project ios/PictureJournal.xcodeproj -target PictureJournalShareExtension -configuration Debug -sdk iphonesimulator -showBuildSettings > ../../artifacts/mobile/ios-extension-build-settings.txt
+          xcodebuild -workspace "$WORKSPACE" -scheme PictureJournal -configuration Debug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' -derivedDataPath ios/build build | tee ../../artifacts/mobile/ios-simulator-build.log
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage simulator-build --status passed
+      - name: Fail closed on bundle, entitlement, signature, and extension registration gates
+        run: |
+          set -euo pipefail
+          HOST_APP='ios/build/Build/Products/Debug-iphonesimulator/PictureJournal.app'
+          APPEX="$HOST_APP/PlugIns/PictureJournalShareExtension.appex"
+          test -d "$HOST_APP"; test -d "$APPEX"
+          HOST_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HOST_APP/Info.plist")"
+          APPEX_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APPEX/Info.plist")"
+          test "$HOST_ID" = 'com.picturejournal.mobile'
+          test "$APPEX_ID" = 'com.picturejournal.mobile.share-extension'
+          APPEX_EXEC="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APPEX/Info.plist")"
+          test -f "$APPEX/$APPEX_EXEC"
+          file "$APPEX/$APPEX_EXEC" > ../../artifacts/mobile/ios-appex-executable-architectures.txt
+          grep -E 'arm64|x86_64' ../../artifacts/mobile/ios-appex-executable-architectures.txt
+          test "$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$APPEX/Info.plist")" = 'com.apple.share-services'
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionAttributes:NSExtensionActivationRule' "$APPEX/Info.plist" > ../../artifacts/mobile/ios-appex-activation-rule.txt
+          test -s ../../artifacts/mobile/ios-appex-activation-rule.txt
+          codesign -d --entitlements :- "$HOST_APP" > ../../artifacts/mobile/ios-host-entitlements.plist 2> ../../artifacts/mobile/ios-host-entitlements-diagnostics.txt
+          codesign -d --entitlements :- "$APPEX" > ../../artifacts/mobile/ios-share-extension-entitlements.plist 2> ../../artifacts/mobile/ios-share-extension-entitlements-diagnostics.txt
+          for entitlement in ../../artifacts/mobile/ios-host-entitlements.plist ../../artifacts/mobile/ios-share-extension-entitlements.plist; do
+            plutil -lint "$entitlement"
+            GROUPS="$(plutil -extract com.apple.security.application-groups json -o - "$entitlement" | tr -d '[:space:]')"
+            test "$GROUPS" = '["group.com.picturejournal.mobile"]'
+          done
+          codesign --verify --strict "$HOST_APP"
+          codesign --verify --strict "$APPEX"
+          codesign -dvv "$HOST_APP" > ../../artifacts/mobile/ios-host-codesign.txt 2>&1
+          codesign -dvv "$APPEX" > ../../artifacts/mobile/ios-share-extension-codesign.txt 2>&1
+          printf '{"hostBundleId":"%s","extensionBundleId":"%s","status":"passed"}\n' "$HOST_ID" "$APPEX_ID" > ../../artifacts/mobile/ios-bundle-gates.json
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage native-identities --status passed
+      - name: Fresh simulator install and fail-closed PluginKit registration
         run: |
           set -euo pipefail
           SIMULATOR_UDID="$(xcrun simctl list devices available -j | ruby -rjson -e 'devices = JSON.parse(STDIN.read).fetch("devices").values.flatten; device = devices.find { |candidate| candidate["name"] == "iPhone 15" && candidate["isAvailable"] }; abort("No available iPhone 15 simulator found") unless device; puts device.fetch("udid")')"
-          xcrun simctl boot "$SIMULATOR_UDID" || true
+          xcrun simctl shutdown "$SIMULATOR_UDID" || true
+          xcrun simctl erase "$SIMULATOR_UDID"
+          xcrun simctl boot "$SIMULATOR_UDID"
           xcrun simctl bootstatus "$SIMULATOR_UDID" -b
-          APP_PATH="$(echo ios/build/Build/Products/Debug-iphonesimulator/*.app)"
-          xcrun simctl install "$SIMULATOR_UDID" "$APP_PATH"
+          xcrun simctl install "$SIMULATOR_UDID" ios/build/Build/Products/Debug-iphonesimulator/PictureJournal.app
           printf '%s\n' "$SIMULATOR_UDID" > ../../artifacts/mobile/ios-simulator-udid.txt
-      - name: Start Metro and run fixture Share Sheet UI test
+          xcrun simctl spawn "$SIMULATOR_UDID" /usr/bin/pluginkit -m -A -D -vv -i com.picturejournal.mobile.share-extension > ../../artifacts/mobile/ios-pluginkit-registration.txt 2>&1
+          ruby -e 'text = File.read(ARGV.fetch(0)); extension = /(?<![A-Za-z0-9.-])com\.picturejournal\.mobile\.share-extension(?![A-Za-z0-9.-])/; host = /(?<![A-Za-z0-9.-])com\.picturejournal\.mobile(?![A-Za-z0-9.-])/; extension_record = text.each_line.find { |line| line.match?(/^\+\s+/) && line.match?(extension) }; abort("Enabled PluginKit extension record missing") unless extension_record; abort("PluginKit host association missing") unless text.match?(host)' ../../artifacts/mobile/ios-pluginkit-registration.txt
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage simulator-registration --status passed
+      - name: Run Metro and real Share Sheet fixture XCUITest with watcher sentinel
         run: |
           set -euo pipefail
-          mkdir -p ../../artifacts/mobile
           SIMULATOR_UDID="$(< ../../artifacts/mobile/ios-simulator-udid.txt)"
-          CI=1 npx expo start --dev-client --port 8081 > ../../artifacts/mobile/ios-metro.log 2>&1 &
-          METRO_PID=$!
-          trap 'kill "$METRO_PID" || true' EXIT
-          for attempt in $(seq 1 30); do curl -fsS http://127.0.0.1:8081/status && break; sleep 2; done
-          curl -fsS http://127.0.0.1:8081/status
+          SENTINEL='../../artifacts/mobile/ios-xcuitest-finished.sentinel'
+          rm -f "$SENTINEL"
+          npx --no-install expo start --dev-client --localhost --port 8081 > ../../artifacts/mobile/ios-metro.log 2>&1 &
+          METRO_PID="$!"; WATCHER_PID=''
+          cleanup() { [ -z "$WATCHER_PID" ] || { kill "$WATCHER_PID" || true; wait "$WATCHER_PID" || true; }; kill "$METRO_PID" || true; wait "$METRO_PID" || true; }
+          trap cleanup EXIT
+          for attempt in {1..60}; do curl --fail --silent http://127.0.0.1:8081/status && break || sleep 1; done
           xcrun simctl launch "$SIMULATOR_UDID" com.picturejournal.mobile
-          for attempt in $(seq 1 60); do
-            if ruby -e 'exit(File.exist?(ARGV[0]) && File.read(ARGV[0]).include?("iOS Bundled") ? 0 : 1)' ../../artifacts/mobile/ios-metro.log; then
-              break
-            fi
-            if [ "$attempt" -eq 60 ]; then
-              echo "Metro did not bundle the iOS dev client within 120 seconds."
-              exit 1
-            fi
-            sleep 2
-          done
-          xcrun simctl terminate "$SIMULATOR_UDID" com.picturejournal.mobile
+          for attempt in {1..60}; do grep -F 'iOS Bundled' ../../artifacts/mobile/ios-metro.log && break || sleep 1; done
+          grep -F 'iOS Bundled' ../../artifacts/mobile/ios-metro.log
+          xcrun simctl terminate "$SIMULATOR_UDID" com.picturejournal.mobile || true
+          node scripts/watch-native-share-checkpoints.mjs --metro-log ../../artifacts/mobile/ios-metro.log --udid "$SIMULATOR_UDID" --output ../../artifacts/mobile/ios-native-key-checkpoints.json --sentinel "$SENTINEL" --timeout-ms 180000 &
+          WATCHER_PID="$!"
           xcodebuild -project ios-share-fixture/ShareFixture.xcodeproj -scheme ShareFixture -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" -derivedDataPath ios-share-fixture/build -resultBundlePath ../../artifacts/mobile/ios-share-fixture.xcresult test | tee ../../artifacts/mobile/ios-share-fixture-test.log
-          if xcrun simctl spawn "$SIMULATOR_UDID" defaults read group.com.picturejournal.mobile > ../../artifacts/mobile/ios-app-group-preferences.txt; then
-            :
-          else
-            printf '%s\n' 'No app-group preferences domain exists.' >> ../../artifacts/mobile/ios-app-group-preferences.txt
-          fi
-          if ruby -e 'exit(File.read(ARGV.fetch(0)).include?("picturejournalShareKey") ? 0 : 1)' ../../artifacts/mobile/ios-app-group-preferences.txt; then
-            echo 'Stale picturejournalShareKey remains in the Picture Journal app-group preferences domain.'
-            exit 1
-          fi
+          printf 'xcuitest-finished\n' > "$SENTINEL"
+          wait "$WATCHER_PID"; WATCHER_PID=''
           xcrun xcresulttool get --path ../../artifacts/mobile/ios-share-fixture.xcresult --format json > ../../artifacts/mobile/ios-share-fixture-summary.json
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage fixture-xcuitest --status passed
+      - name: Check external key is absent after fixture
+        run: |
+          set -euo pipefail
+          SIMULATOR_UDID="$(< ../../artifacts/mobile/ios-simulator-udid.txt)"
+          STDOUT="$(mktemp)"; STDERR="$(mktemp)"
+          trap 'rm -f "$STDOUT" "$STDERR"' EXIT
+          set +e
+          xcrun simctl spawn "$SIMULATOR_UDID" defaults read group.com.picturejournal.mobile picturejournalShareKey > "$STDOUT" 2> "$STDERR"
+          QUERY_STATUS="$?"
+          set -e
+          node scripts/check-native-share-key.mjs --stdout "$STDOUT" --stderr "$STDERR" --exit-status "$QUERY_STATUS" --output ../../artifacts/mobile/ios-native-key-final.json --key picturejournalShareKey
+          node scripts/write-ios-share-manifest.mjs --output ../../artifacts/mobile/ios-share-stage-manifest.json --stage native-key-final --status passed
+      - name: Finalize evidence closure
+        if: always()
+        run: node scripts/finalize-ios-share-artifacts.mjs --output ../../artifacts/mobile/ios-share-evidence-manifest.json --closure-output ../../artifacts/mobile/ios-share-closure-receipt.json --workflow ../../.github/workflows/mobile-share-proof.yml --outcome "${{ job.status }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ios-simulator-proof
-          path: |
-            artifacts/mobile/ios-simulator-build.log
-            artifacts/mobile/ios-metro.log
-            artifacts/mobile/ios-share-fixture-test.log
-            artifacts/mobile/ios-share-fixture-summary.json
-            artifacts/mobile/ios-app-group-preferences.txt
-            artifacts/mobile/ios-share-fixture.xcresult
+          name: ios-share-proof
+          if-no-files-found: error
+          path: artifacts/mobile

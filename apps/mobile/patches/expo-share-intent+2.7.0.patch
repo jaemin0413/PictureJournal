@@ -1,0 +1,80 @@
+diff --git a/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionConfig.js b/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionConfig.js
+index 1dde578..43c9392 100644
+--- a/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionConfig.js
++++ b/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionConfig.js
+@@ -4,7 +4,7 @@ exports.withShareExtensionConfig = void 0;
+ const constants_1 = require("./constants");
+ const writeIosShareExtensionFiles_1 = require("./writeIosShareExtensionFiles");
+ const withShareExtensionConfig = (config, parameters) => {
+-    const extName = (0, constants_1.getShareExtensionName)(parameters);
++    const extName = `${(0, constants_1.getShareExtensionName)(parameters)}ShareExtension`;
+     const appIdentifier = config.ios.bundleIdentifier;
+     const shareExtensionIdentifier = (0, constants_1.getShareExtensionBundledIdentifier)(appIdentifier, parameters);
+     // When disabled this function no longer alters the config object passed to it
+@@ -17,7 +17,7 @@ const withShareExtensionConfig = (config, parameters) => {
+         if (!config.extra) {
+             config.extra = {};
+         }
+-        if (!extConfigIndex) {
++        if (extConfigIndex === null || extConfigIndex === undefined) {
+             if (!config.extra.eas) {
+                 config.extra.eas = {};
+             }
+diff --git a/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionXcodeTarget.js b/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionXcodeTarget.js
+index c9cbd8b..3a01ac4 100644
+--- a/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionXcodeTarget.js
++++ b/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionXcodeTarget.js
+@@ -7,6 +7,7 @@ const writeIosShareExtensionFiles_1 = require("./writeIosShareExtensionFiles");
+ const withShareExtensionXcodeTarget = (config, parameters) => {
+     return (0, config_plugins_1.withXcodeProject)(config, async (config) => {
+         const extensionName = (0, constants_1.getShareExtensionName)(parameters);
++        const targetName = `${extensionName}ShareExtension`;
+         const platformProjectRoot = config.modRequest.platformProjectRoot;
+         const scheme = config.scheme;
+         const appIdentifier = config.ios?.bundleIdentifier;
+@@ -20,10 +21,33 @@ const withShareExtensionXcodeTarget = (config, parameters) => {
+         await (0, writeIosShareExtensionFiles_1.writeShareExtensionFiles)(platformProjectRoot, scheme, appIdentifier, parameters, config.name);
+         const pbxProject = config.modResults;
+-        // Check if the extension target already exists. If so, abort the process since the steps below are already done.
+-        if (!!pbxProject.pbxTargetByName(extensionName)) {
++        // Check that an existing extension target is complete before treating the operation as idempotent.
++        const existingTarget = pbxProject.pbxTargetByName(targetName);
++        if (existingTarget) {
++            const objects = pbxProject.hash?.project?.objects;
++            const target = objects?.PBXNativeTarget?.[existingTarget.uuid] ?? existingTarget;
++            const unquote = (value) => typeof value === "string" ? value.replace(/^"|"$/g, "") : value;
++            const referenceUuid = (reference) => typeof reference === "string" ? reference : reference?.value;
++            const product = objects?.PBXFileReference?.[referenceUuid(target.productReference)];
++            const configurationList = objects?.XCConfigurationList?.[referenceUuid(target.buildConfigurationList)];
++            const configurationIds = configurationList?.buildConfigurations?.map(referenceUuid);
++            const configurations = objects?.XCBuildConfiguration;
++            const hasExpectedProduct = unquote(target.productType) === "com.apple.product-type.app-extension" &&
++                unquote(product?.explicitFileType) === "wrapper.app-extension" &&
++                (unquote(product?.path) === `${targetName}.appex` ||
++                    unquote(product?.name) === `${targetName}.appex`);
++            const hasExpectedConfigurations = Array.isArray(configurationIds) &&
++                configurationIds.length > 0 &&
++                configurationIds.every((uuid) => {
++                    const settings = configurations?.[uuid]?.buildSettings;
++                    return unquote(settings?.PRODUCT_NAME) === targetName &&
++                        unquote(settings?.PRODUCT_BUNDLE_IDENTIFIER) === shareExtensionIdentifier;
++                });
++            if (!hasExpectedProduct || !hasExpectedConfigurations) {
++                throw new Error(`[expo-share-intent] Existing ${targetName} target is malformed; refusing to create a duplicate share extension target.`);
++            }
+             return config;
+         }
+-        const target = pbxProject.addTarget(extensionName, "app_extension", extensionName);
++        const target = pbxProject.addTarget(targetName, "app_extension", extensionName);
+         // Add a new PBXSourcesBuildPhase for our ShareViewController
+         // (we can't add it to the existing one because an extension is kind of an extra app)
+         pbxProject.addBuildPhase([], "PBXSourcesBuildPhase", "Sources", target.uuid);
+@@ -56,7 +57,7 @@ const withShareExtensionXcodeTarget = (config, parameters) => {
+             if (typeof configurations[key].buildSettings !== "undefined") {
+                 const buildSettingsObj = configurations[key].buildSettings;
+                 if (typeof buildSettingsObj["PRODUCT_NAME"] !== "undefined" &&
+-                    buildSettingsObj["PRODUCT_NAME"] === `"${extensionName}"`) {
++                    buildSettingsObj["PRODUCT_NAME"] === `"${targetName}"`) {
+                     buildSettingsObj["CLANG_ENABLE_MODULES"] = "YES";
+                     buildSettingsObj["INFOPLIST_FILE"] = `"${infoPlistFilePath}"`;
+                     buildSettingsObj["CODE_SIGN_ENTITLEMENTS"] =

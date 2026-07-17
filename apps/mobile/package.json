@@ -6,6 +6,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test src/mobile-runtime.test.mjs",
+    "ios-share:test": "node --test src/ios-share-extension.test.mjs src/ios-share-runtime.test.mjs src/ios-share-ops.test.mjs",
+    "ios-share:verify-project": "node scripts/verify-ios-share-extension.mjs",
     "web:export": "npx expo export --platform web --output-dir dist-web",
     "android:prebuild": "npx expo prebuild --platform android --no-install --clean",
     "ios:prebuild": "npx expo prebuild --platform ios --no-install --clean",
@@ -22,7 +24,7 @@
     "expo-linking": "~6.3.1",
     "expo-location": "~17.0.1",
     "expo-secure-store": "~13.0.2",
-    "expo-share-intent": "^2.7.0",
+    "expo-share-intent": "2.7.0",
     "expo-splash-screen": "^0.27.7",
     "expo-status-bar": "~1.12.1",
     "react": "18.2.0",

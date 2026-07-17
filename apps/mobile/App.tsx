@@ -77,6 +77,30 @@ type PendingShareMetadata = {
   checksum: string;
   receipts: Record<string, string>;
 };
+type ShareRuntimeCheckpoint = 'cold' | 'cold-relaunch' | 'warm' | 'warm-relaunch';
+type ShareRuntimePhase = 'intent-observed' | 'durable-commit' | 'reset-invoked' | 'checkpoint';
+type ShareRuntimeEvent = {
+  schema: 'picturejournal.share-runtime.v1';
+  event_id: string;
+  phase: ShareRuntimePhase;
+  delivery_hash: string;
+  queue_generation: string | null;
+  count: number;
+  checkpoint: ShareRuntimeCheckpoint;
+  monotonic_timestamp: number;
+};
+type NativeShareDeliveryOutcome = 'reset-completed' | 'reset-outcome-unknown';
+
+export type NativeShareDeliveryCoordinator = {
+  clientIntakeId: string;
+  checkpoint: ShareRuntimeCheckpoint;
+  queueCount: number;
+  persist: () => Promise<PendingShareMetadata | null>;
+  reset: () => void | Promise<void>;
+  clearReceipt: () => Promise<void>;
+  emit: (event: ShareRuntimeEvent) => void;
+};
+
 type CoordinateProvenance = 'exif' | 'current' | 'manual';
 type PickedPhoto = { uri: string; name: string; mimeType: string; latitude?: number; longitude?: number; takenAt?: string };
 
@@ -203,6 +227,65 @@ export function utf8Checksum(value: string): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+export function monotonicTimestamp(): number {
+  return Math.floor(globalThis.performance?.now?.() ?? Date.now());
+}
+
+export function createShareRuntimeCorrelation(clientIntakeId: string): { eventId: string; deliveryHash: string } {
+  if (!clientIntakeId) throw new Error('A persisted client intake ID is required for share runtime correlation.');
+  return {
+    eventId: `pj-share-${utf8Checksum(lengthPrefixed(['event', clientIntakeId]))}`,
+    deliveryHash: `pj-share-${utf8Checksum(lengthPrefixed(['delivery', clientIntakeId]))}`,
+  };
+}
+
+export function createShareRuntimeEvent(input: {
+  clientIntakeId: string;
+  phase: ShareRuntimePhase;
+  queueGeneration: string | null;
+  count: number;
+  checkpoint: ShareRuntimeCheckpoint;
+  timestamp?: number;
+}): ShareRuntimeEvent {
+  const correlation = createShareRuntimeCorrelation(input.clientIntakeId);
+  return {
+    schema: 'picturejournal.share-runtime.v1',
+    event_id: correlation.eventId,
+    phase: input.phase,
+    delivery_hash: correlation.deliveryHash,
+    queue_generation: input.queueGeneration,
+    count: input.count,
+    checkpoint: input.checkpoint,
+    monotonic_timestamp: input.timestamp ?? monotonicTimestamp(),
+  };
+}
+
+export async function coordinateNativeShareDelivery(input: NativeShareDeliveryCoordinator): Promise<{
+  metadata: PendingShareMetadata | null;
+  resetOutcome: NativeShareDeliveryOutcome;
+}> {
+  const emit = (phase: ShareRuntimePhase, queueGeneration: string | null, count: number) =>
+    input.emit(createShareRuntimeEvent({
+      clientIntakeId: input.clientIntakeId,
+      phase,
+      queueGeneration,
+      count,
+      checkpoint: input.checkpoint,
+    }));
+  emit('intent-observed', null, input.queueCount);
+  const metadata = await input.persist();
+  const durableQueueCount = metadata ? input.queueCount + 1 : input.queueCount;
+  if (metadata) emit('durable-commit', metadata.generation, durableQueueCount);
+  try {
+    await input.reset();
+  } catch {
+    return { metadata, resetOutcome: 'reset-outcome-unknown' };
+  }
+  emit('reset-invoked', metadata?.generation ?? null, durableQueueCount);
+  await input.clearReceipt();
+  return { metadata, resetOutcome: 'reset-completed' };
 }
 
 export function createPendingShareMetadata(generation: string, chunks: string[], receipts: Record<string, string> = {}): PendingShareMetadata {
@@ -529,6 +612,16 @@ export default function App() {
   const sessionEpochRef = useRef(0);
   const replayAbortRef = useRef<AbortController | null>(null);
   const lastAutoReplayTriggerRef = useRef<string | null>(null);
+  const [shareRuntimeCheckpoint, setShareRuntimeCheckpoint] = useState<ShareRuntimeCheckpoint>('cold');
+  const [shareRuntimeEventPhase, setShareRuntimeEventPhase] = useState<ShareRuntimePhase>('intent-observed');
+  const [shareRuntimeEvent, setShareRuntimeEvent] = useState<ShareRuntimeEvent | null>(null);
+  const [shareRestoreBarrierComplete, setShareRestoreBarrierComplete] = useState(false);
+  const emitShareRuntimeEvent = useCallback((event: ShareRuntimeEvent) => {
+    setShareRuntimeEventPhase(event.phase);
+    setShareRuntimeEvent(event);
+    if (__DEV__) console.info(`PJ_SHARE_EVENT ${JSON.stringify(event)}`);
+  }, []);
+
   const selectedPlacesFolderIdRef = useRef<string | null>(null);
   const [status, setStatus] = useState('Secure session restore pending.');
   const [restoreRetryAvailable, setRestoreRetryAvailable] = useState(false);
@@ -662,22 +755,24 @@ export default function App() {
     update: (current: PendingSharePayload[]) => PendingSharePayload[],
     updateReceipts: (current: Record<string, string>) => Record<string, string> = (current) => current,
   ) => {
-    const commit = async () => {
+    const commit = async (): Promise<PendingShareMetadata | null> => {
       const items = updatePendingShareQueue(pendingSharesRef.current, update);
       const receipts = filterPendingShareReceipts(updateReceipts(pendingShareReceiptsRef.current), items);
       if (
         JSON.stringify(items) === JSON.stringify(pendingSharesRef.current)
         && JSON.stringify(receipts) === JSON.stringify(pendingShareReceiptsRef.current)
-      ) return;
+      ) return null;
       const metadata = await secureSetChunked(pendingShareKey, JSON.stringify(items), receipts);
       pendingSharesRef.current = items;
       pendingShareReceiptsRef.current = receipts;
       setPendingShareGeneration(metadata.generation);
       setPendingShares(items);
+      return metadata;
     };
     const next = pendingShareMutationRef.current.then(commit, commit);
-    pendingShareMutationRef.current = next.catch(() => undefined);
-    await next;
+    pendingShareMutationRef.current = next.then(() => undefined, () => undefined);
+    return next;
+
   }, []);
 
   const enqueuePendingShare = useCallback(async (item: PendingSharePayload, deliveryId?: string): Promise<boolean> => {
@@ -838,6 +933,7 @@ export default function App() {
   }, [pendingShareGeneration, placesFolder, refreshPlaces, refreshUnresolved, replayPendingShares, session]);
 
   const restoreSession = useCallback(async () => {
+    setShareRestoreBarrierComplete(false);
     const restoreEpoch = sessionEpochRef.current;
     const isCurrent = () => sessionEpochRef.current === restoreEpoch && sessionRef.current === null;
     const queueRestoreState: { error?: string } = {};
@@ -851,14 +947,39 @@ export default function App() {
       secureGet(placesFolderKey),
     ]);
     if (!isCurrent()) return;
+    if (queueRestoreState.error) {
+      setRestoreRetryAvailable(true);
+      setStatus(`Pending share recovery needs manual attention: ${queueRestoreState.error} Retry preserves the stored session and queued shares.`);
+      return;
+    }
     if (storedShares) {
       const parsedShares = parsePendingShares(storedShares.value);
-      await updatePendingShares(
+      const restoredMetadata = await updatePendingShares(
         (current) => restorePendingShareQueue(parsedShares, current, storedShares.metadata.receipts, pendingShareReceiptsRef.current).items,
         (receipts) => restorePendingShareQueue(parsedShares, pendingSharesRef.current, storedShares.metadata.receipts, receipts).receipts,
       );
       if (!isCurrent()) return;
+      const restoredItems = pendingSharesRef.current;
+      const checkpoint: ShareRuntimeCheckpoint | null = restoredItems.length === 1
+        ? 'cold-relaunch'
+        : restoredItems.length >= 2
+          ? 'warm-relaunch'
+          : null;
+      if (checkpoint) {
+        const delivery = restoredItems.at(-1);
+        if (!delivery) throw new Error('Restored share checkpoint has no persisted queue item.');
+        setShareRuntimeCheckpoint(checkpoint);
+        emitShareRuntimeEvent(createShareRuntimeEvent({
+          clientIntakeId: delivery.clientIntakeId,
+          phase: 'checkpoint',
+          queueGeneration: restoredMetadata?.generation ?? storedShares.metadata.generation,
+          count: restoredItems.length,
+          checkpoint,
+        }));
+      }
     }
+    if (!isCurrent()) return;
+    setShareRestoreBarrierComplete(true);
     setSelectedDiaryFolderId(storedDiaryFolderId);
     setSelectedPlacesFolderId(storedPlacesFolderId);
     if (!storedSession) {
@@ -915,7 +1036,7 @@ export default function App() {
       ? `Secure session restored. Pending share recovery needs manual attention: ${queueRestoreState.error}`
       : 'Secure session restored and validated.');
     setScreen('folders');
-  }, [updatePendingShares]);
+  }, [emitShareRuntimeEvent, updatePendingShares]);
 
   useEffect(() => {
     restoreSession()
@@ -927,6 +1048,7 @@ export default function App() {
   }, [restoreSession]);
 
   useEffect(() => {
+    if (!shareRestoreBarrierComplete) return;
     const captureUrl = async (url: string | null) => {
       if (!url) return;
       const parsed = Linking.parse(url);
@@ -957,11 +1079,11 @@ export default function App() {
     Linking.getInitialURL().then(captureUrl).catch((error: Error) => setStatus(error.message));
     const subscription = Linking.addEventListener('url', (event) => captureUrl(event.url).catch((error: Error) => setStatus(error.message)));
     return () => subscription.remove();
-  }, [enqueuePendingShare, placesFolder, session]);
+  }, [enqueuePendingShare, placesFolder, session, shareRestoreBarrierComplete]);
 
   useEffect(() => {
     if (shareIntentError) setStatus(`Native share error: ${shareIntentError}`);
-    if (!hasShareIntent) return;
+    if (!shareRestoreBarrierComplete || !hasShareIntent) return;
     const captureNativeShare = async () => {
       const rawUrl = shareIntent.webUrl ?? '';
       const rawTitle = shareIntent.meta?.title ?? '';
@@ -979,11 +1101,31 @@ export default function App() {
           session?.user.userId,
           placesFolder?.folderId,
         );
-        await enqueuePendingShare(item, deliveryId);
-        resetShareIntentRef.current(true);
-        await clearNativeReceipt(deliveryId);
+        const checkpoint: ShareRuntimeCheckpoint = pendingSharesRef.current.length >= 1 ? 'warm' : 'cold';
+        setShareRuntimeCheckpoint(checkpoint);
+        const clientIntakeId = item.clientIntakeId;
+        const coordinator = await coordinateNativeShareDelivery({
+          clientIntakeId,
+          checkpoint,
+          queueCount: pendingSharesRef.current.length,
+          persist: async () => {
+            let deliveryResult: ReturnType<typeof applyPendingShareDelivery> | undefined;
+            return updatePendingShares(
+              (current) => {
+                deliveryResult = applyPendingShareDelivery(current, pendingShareReceiptsRef.current, deliveryId, item);
+                return deliveryResult.items;
+              },
+              (receipts) => (deliveryResult ?? applyPendingShareDelivery(pendingSharesRef.current, receipts, deliveryId, item)).receipts,
+            );
+          },
+          reset: () => resetShareIntentRef.current(true),
+          clearReceipt: () => clearNativeReceipt(deliveryId),
+          emit: emitShareRuntimeEvent,
+        });
+        if (coordinator.resetOutcome === 'reset-outcome-unknown') throw new Error('Native share reset outcome is unknown; durable receipt was retained.');
         if (__DEV__) console.info('PICTUREJOURNAL_SHARE_RECEIVED', item.clientIntakeId);
         capturedIntentKeysRef.current.delete(deliveryId);
+
         setStatus('Native share captured locally for automatic save after authentication and folder binding.');
         setScreen(session ? 'placesList' : 'auth');
       } catch (error) {
@@ -992,7 +1134,8 @@ export default function App() {
       }
     };
     captureNativeShare().catch((error: Error) => setStatus(error.message));
-  }, [clearNativeReceipt, enqueuePendingShare, hasShareIntent, placesFolder, session, shareIntent, shareIntentError]);
+  }, [clearNativeReceipt, emitShareRuntimeEvent, hasShareIntent, placesFolder, session, shareIntent, shareIntentError, shareRestoreBarrierComplete, updatePendingShares]);
+
 
 
   useEffect(() => {
@@ -1309,6 +1452,15 @@ export default function App() {
               <Text testID="share-queue-count">{pendingShares.length}</Text>
               <Text testID="share-queue-payload">{pendingShares.map((item) => item.rawText).join('\n')}</Text>
               <Text testID="share-native-receipt-count">{Object.keys(pendingShareReceiptsRef.current).length}</Text>
+              <Text testID="share-runtime-queue-count">{pendingShares.length}</Text>
+              <Text testID="share-runtime-queue-generation">{pendingShareGeneration ?? ''}</Text>
+              <Text testID="share-runtime-dedupe-count">{Object.keys(pendingShareReceiptsRef.current).length}</Text>
+              <Text testID="share-runtime-dedupe-hash">{utf8Checksum(Object.values(pendingShareReceiptsRef.current).sort().join('|'))}</Text>
+              <Text testID="share-runtime-event-source">PJ_SHARE_EVENT</Text>
+              <Text testID="share-runtime-event-id">{shareRuntimeEvent?.event_id ?? ''}</Text>
+              <Text testID="share-runtime-delivery-hash">{shareRuntimeEvent?.delivery_hash ?? ''}</Text>
+              <Text testID="share-runtime-checkpoint">{shareRuntimeCheckpoint}</Text>
+              <Text testID="share-runtime-event-phase">{shareRuntimeEventPhase}</Text>
             </View>
           )}
         </View>
