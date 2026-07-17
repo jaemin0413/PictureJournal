@@ -20,6 +20,24 @@ export function parseJsonLines(contents) {
     try { return JSON.parse(line); } catch { throw new Error(`Invalid ledger JSONL at line ${index + 1}.`); }
   });
 }
+export async function readGitHubRuns(source, io, stdin = process.stdin) {
+  const contents = source === '-'
+    ? await readStdin(stdin)
+    : await io.readFile(source, 'utf8');
+  if (!contents.trim()) throw new Error('GitHub runs JSON is empty.');
+  try {
+    return JSON.parse(contents);
+  } catch {
+    throw new Error('GitHub runs JSON is invalid.');
+  }
+}
+
+async function readStdin(stdin) {
+  stdin.setEncoding('utf8');
+  let contents = '';
+  for await (const chunk of stdin) contents += chunk;
+  return contents;
+}
 
 export function validateHistory(rows, githubRuns, cutoff, budgetEpoch) {
   const cutoffTime = Date.parse(cutoff);
@@ -134,7 +152,7 @@ export async function dispatch(options, dependencies = {}) {
   const now = dependencies.now ?? (() => new Date().toISOString());
   const nonce = dependencies.nonce ?? randomUUID;
   const rows = parseJsonLines(await io.readFile(options.ledger, 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error)));
-  const githubRuns = JSON.parse(await io.readFile(options.githubRuns, 'utf8'));
+  const githubRuns = await readGitHubRuns(options.githubRuns, io, dependencies.stdin);
   const suppliedRuns = githubRuns.workflow_runs ?? githubRuns;
   const budget = validateHistory(rows, suppliedRuns, options.cutoff, options.budgetEpoch);
   if (requiresRecoveryReview(rows, options)) throw new Error('Existing dispatch intent requires explicit recovery review.');

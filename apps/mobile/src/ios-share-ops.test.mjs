@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Readable } from 'node:stream';
 import { dispatch, parseDispatchResponse, validateHistory } from '../scripts/dispatch-ios-share-proof.mjs';
 
 const cutoff = '2026-07-17T00:00:00.000Z';
@@ -75,6 +76,30 @@ test('dry-run emits a token-free readiness receipt without network or ledger mut
   assert.equal(JSON.stringify(result).includes('secret'), false);
   assert.equal(requested, false);
   assert.deepEqual(io.writes, []);
+});
+test('stdin GitHub runs support dry-run and reject empty or malformed input before dispatch', async () => {
+  const validIo = memoryIo();
+  const result = await dispatch(
+    { ...options, githubRuns: '-', dryRun: true, token: undefined },
+    { io: validIo, stdin: Readable.from(['{"workflow_runs":[]}']), request: async () => assert.fail('dry-run must not request') },
+  );
+  assert.deepEqual(result.readiness.github_runs, []);
+  assert.deepEqual(validIo.writes, []);
+
+  for (const [input, error] of [['', /GitHub runs JSON is empty/], ['not json', /GitHub runs JSON is invalid/]]) {
+    const io = memoryIo();
+    let requests = 0;
+    await assert.rejects(
+      () => dispatch({ ...options, githubRuns: '-' }, {
+        io,
+        stdin: Readable.from([input]),
+        request: async () => { requests += 1; },
+      }),
+      error,
+    );
+    assert.equal(requests, 0);
+    assert.deepEqual(io.writes, []);
+  }
 });
 
 test('a dangling intent hard-stops rather than retrying', async () => {
