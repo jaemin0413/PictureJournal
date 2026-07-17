@@ -55,9 +55,8 @@ function reidentify(objects) {
 }
 function existingProjectMod(objects) {
   return {
-    hash: { project: { objects } },
-    pbxTargetByName: (name) => Object.entries(objects.PBXNativeTarget)
-      .map(([uuid, target]) => ({ ...target, uuid }))
+    hash: { project: { rootObject: 'PROJECT', objects } },
+    pbxTargetByName: (name) => Object.values(objects.PBXNativeTarget)
       .find((target) => target.name === name) ?? null,
   };
 }
@@ -77,7 +76,7 @@ function minimalProjectMod() {
     PBXSourcesBuildPhase: {},
     PBXResourcesBuildPhase: {},
   };
-  const calls = { addTarget: 0, addBuildPhase: 0, pbxCreateGroup: 0, addFile: 0, addSourceFile: 0, addResourceFile: 0 };
+  const calls = { addTarget: 0, addTargetDependency: 0, addBuildPhase: 0, pbxCreateGroup: 0, addFile: 0, addSourceFile: 0, addResourceFile: 0 };
   const modResults = {
     ...existingProjectMod(objects),
     addTarget: (name, type, extensionName) => {
@@ -100,12 +99,17 @@ function minimalProjectMod() {
           buildSettings: { PRODUCT_NAME: `"${name}"`, PRODUCT_BUNDLE_IDENTIFIER: `"${EXTENSION_BUNDLE_ID}"` },
         };
       }
+      objects.PBXBuildFile.BUILD_FILE = { fileRef: 'PRODUCT' };
+      objects.PBXCopyFilesBuildPhase.COPY.files.push('BUILD_FILE');
+      return { ...objects.PBXNativeTarget.EXT };
+    },
+    addTargetDependency: (targetUuid, dependencyTargets) => {
+      calls.addTargetDependency += 1;
+      assert.equal(targetUuid, 'HOST');
+      assert.deepEqual(dependencyTargets, ['EXT']);
       objects.PBXContainerItemProxy.PROXY = { containerPortal: 'PROJECT', remoteGlobalIDString: 'EXT', proxyType: 1 };
       objects.PBXTargetDependency.DEPENDENCY = { target: 'EXT', targetProxy: 'PROXY' };
       objects.PBXNativeTarget.HOST.dependencies.push('DEPENDENCY');
-      objects.PBXBuildFile.BUILD_FILE = { fileRef: 'PRODUCT' };
-      objects.PBXCopyFilesBuildPhase.COPY.files.push('BUILD_FILE');
-      return { ...objects.PBXNativeTarget.EXT, uuid: 'EXT' };
     },
     addBuildPhase: (files, isa, name, targetUuid) => {
       calls.addBuildPhase += 1;
@@ -175,14 +179,16 @@ test('patch keeps a distinct internal target when the normalized display name co
   assert.match(patch, /const targetName = `\$\{extensionName\}ShareExtension`;/);
   assert.match(patch, /addTarget\(targetName, "app_extension", extensionName\)/);
   assert.match(patch, /Existing \$\{targetName\} target is malformed; refusing to create a duplicate/);
+  assert.match(patch, /ensureHostTargetDependency\(pbxProject, hostTargetUuid, extensionTargetUuid\)/);
 });
-test('installed patched Xcode mod creates one complete extension graph and preserves it on the second invocation', async () => {
+test('installed patched Xcode mod repairs addTarget graphs that omit the host dependency and preserves them on the second invocation', async () => {
   const { objects, calls, modResults } = minimalProjectMod();
 
   const first = await runInstalledXcodeMod(modResults);
   assert.match(first.infoPlist, /<key>CFBundleDisplayName<\/key>\s*<string>Picture Journal<\/string>/);
   assert.deepEqual(calls, {
     addTarget: 1,
+    addTargetDependency: 1,
     addBuildPhase: 2,
     pbxCreateGroup: 1,
     addFile: 1,
@@ -202,6 +208,7 @@ test('installed patched Xcode mod creates one complete extension graph and prese
   assert.equal(objects.PBXNativeTarget.HOST.dependencies.length, 1);
   assert.equal(objects.PBXCopyFilesBuildPhase.COPY.files.length, 1);
   assert.equal(calls.addTarget, 1);
+  assert.equal(calls.addTargetDependency, 1);
 
   const malformed = project({ productType: 'com.apple.product-type.application' });
   await assert.rejects(runInstalledXcodeMod(existingProjectMod(malformed)), /Existing PictureJournalShareExtension target is malformed/);
