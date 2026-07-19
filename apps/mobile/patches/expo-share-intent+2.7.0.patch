@@ -21,7 +21,7 @@ index 1dde578..43c9392 100644
                  config.extra.eas = {};
              }
 diff --git a/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionXcodeTarget.js b/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionXcodeTarget.js
-index c9cbd8b..ad16789 100644
+index c9cbd8b..7fd8575 100644
 --- a/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionXcodeTarget.js
 +++ b/node_modules/expo-share-intent/plugin/build/ios/withIosShareExtensionXcodeTarget.js
 @@ -4,9 +4,64 @@ exports.withShareExtensionXcodeTarget = void 0;
@@ -45,13 +45,13 @@ index c9cbd8b..ad16789 100644
 +};
 +const ensureHostTargetDependency = (pbxProject, hostTargetUuid, extensionTargetUuid) => {
 +    const objects = pbxProject.hash?.project?.objects;
-+    const dependencies = objects?.PBXTargetDependency;
-+    const proxies = objects?.PBXContainerItemProxy;
 +    const nativeTargets = objects?.PBXNativeTarget;
 +    const rootObject = pbxProject.hash?.project?.rootObject;
-+    if (!objects || !dependencies || !proxies || !nativeTargets || !rootObject) {
++    if (!objects || !nativeTargets || !rootObject) {
 +        throw new Error("[expo-share-intent] Could not resolve the Xcode project sections needed to link the share extension target.");
 +    }
++    const dependencies = objects.PBXTargetDependency ?? (objects.PBXTargetDependency = {});
++    const proxies = objects.PBXContainerItemProxy ?? (objects.PBXContainerItemProxy = {});
 +    const extensionDependencies = Object.entries(dependencies)
 +        .filter(([uuid, dependency]) => !uuid.endsWith("_comment") && referenceUuid(dependency?.target) === extensionTargetUuid);
 +    const extensionProxies = Object.entries(proxies)

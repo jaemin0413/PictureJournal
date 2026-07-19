@@ -61,7 +61,7 @@ function existingProjectMod(objects) {
   };
 }
 
-function minimalProjectMod() {
+function minimalProjectMod({ omitDependencySections = false } = {}) {
   const objects = {
     PBXProject: { PROJECT: { targets: ['HOST'] } },
     PBXNativeTarget: { HOST: { name: 'PictureJournal', buildPhases: ['COPY'], dependencies: [] } },
@@ -76,6 +76,10 @@ function minimalProjectMod() {
     PBXSourcesBuildPhase: {},
     PBXResourcesBuildPhase: {},
   };
+  if (omitDependencySections) {
+    delete objects.PBXTargetDependency;
+    delete objects.PBXContainerItemProxy;
+  }
   const calls = { addTarget: 0, addTargetDependency: 0, addBuildPhase: 0, pbxCreateGroup: 0, addFile: 0, addSourceFile: 0, addResourceFile: 0 };
   const modResults = {
     ...existingProjectMod(objects),
@@ -181,8 +185,8 @@ test('patch keeps a distinct internal target when the normalized display name co
   assert.match(patch, /Existing \$\{targetName\} target is malformed; refusing to create a duplicate/);
   assert.match(patch, /ensureHostTargetDependency\(pbxProject, hostTargetUuid, extensionTargetUuid\)/);
 });
-test('installed patched Xcode mod repairs addTarget graphs that omit the host dependency and preserves them on the second invocation', async () => {
-  const { objects, calls, modResults } = minimalProjectMod();
+test('installed patched Xcode mod initializes missing dependency sections and remains idempotent', async () => {
+  const { objects, calls, modResults } = minimalProjectMod({ omitDependencySections: true });
 
   const first = await runInstalledXcodeMod(modResults);
   assert.match(first.infoPlist, /<key>CFBundleDisplayName<\/key>\s*<string>Picture Journal<\/string>/);
@@ -196,6 +200,14 @@ test('installed patched Xcode mod repairs addTarget graphs that omit the host de
     addResourceFile: 3,
   });
   assert.deepEqual(inspect(objects).errors, []);
+  assert.deepEqual(Object.keys(objects.PBXTargetDependency), ['DEPENDENCY']);
+  assert.deepEqual(Object.keys(objects.PBXContainerItemProxy), ['PROXY']);
+  assert.deepEqual(objects.PBXTargetDependency.DEPENDENCY, { target: 'EXT', targetProxy: 'PROXY' });
+  assert.deepEqual(objects.PBXContainerItemProxy.PROXY, {
+    containerPortal: 'PROJECT',
+    remoteGlobalIDString: 'EXT',
+    proxyType: 1,
+  });
 
   await runInstalledXcodeMod(modResults);
   assert.deepEqual(inspect(objects).errors, []);
@@ -325,7 +337,10 @@ test('rejects duplicate dependency and proxy edges', () => {
   assert.match(inspect(duplicateProxy).errors.join('\n'), /exactly one PBXTargetDependency/);
 });
 
-test('rejects a dependency proxy with the wrong extension UUID or a missing dependency', () => {
+test('rejects dangling dependency proxies, wrong extension UUIDs, and missing dependencies', () => {
+  const dangling = project();
+  delete dangling.PBXContainerItemProxy.PROXY;
+  assert.match(inspect(dangling).errors.join('\n'), /PBXTargetDependency/);
   assert.match(errorsFor({ proxyTarget: 'WRONG' }), /PBXTargetDependency/);
   assert.match(errorsFor({ includeDependency: false }), /PBXTargetDependency/);
 });
